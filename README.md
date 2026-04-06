@@ -1,92 +1,186 @@
-# Prox Founding Engineer Challenge
+# Prox Challenge: Vulcan OmniPro 220 Assistant
 
-<img src="product.webp" alt="Vulcan OmniPro 220" width="400" /> <img src="product-inside.webp" alt="Vulcan OmniPro 220 — inside panel" width="400" />
+A multimodal support agent for the Vulcan OmniPro 220 welder, built for the Prox founding engineer challenge.
 
-## The Product
+This project turns a dense product manual into an interactive assistant that can:
 
-The [Vulcan OmniPro 220](https://www.harborfreight.com/omnipro-220-industrial-multiprocess-welder-with-120240v-input-57812.html) is a multiprocess welding system sold by Harbor Freight. It supports four welding processes (MIG, Flux-Cored, TIG, and Stick), runs on both 120V and 240V input, and has an LCD-based synergic control system.
+- answer setup and troubleshooting questions in plain language
+- retrieve the most relevant manual pages and excerpts
+- surface manual images for visual questions
+- generate Claude-style artifacts for diagrams and interactive helpers
+- support voice input and spoken answers in the frontend
 
-Its owner's manual is 48 pages of dense technical content. Duty cycle matrices across multiple voltages and amperages, polarity setup procedures that differ per welding process, wire feed mechanisms with specific tensioner calibrations, wiring schematics, troubleshooting matrices, weld diagnosis diagrams, and a full parts list.
+The goal is not just retrieval. The app is designed to feel like a practical garage-side assistant for someone actively trying to use the machine.
 
-This is exactly the kind of product Prox exists for. Nobody knows how to use this machine straight out of the box but has time to read 48 page manual, but a complicated machine needs expert-level support.
+## What The App Does
 
-Additional video: https://www.youtube.com/watch?v=kxGDoGcnhBw
+The assistant handles questions like:
 
-## Your Job
+- `What polarity setup do I need for TIG welding? Which socket does the ground clamp go in?`
+- `What's the duty cycle for MIG welding at 200A on 240V?`
+- `I'm getting porosity in my flux-cored welds. What should I check?`
+- `How do I set up for MIG on 1/4 inch mild steel?`
 
-Build a multimodal reasoning agent for the Vulcan OmniPro 220 using the Claude Agent SDK. The agent must be able to answer deep technical questions about this product accurately, helpfully, and not just in text.
+Depending on the question, the app can:
 
-The manuals are in the `files/` directory.
+- answer directly from retrieved manual content
+- pull in page images when the answer is visual
+- generate artifacts when a diagram or richer explanation is more useful than plain text
+- read the answer aloud
 
-**There is no limit to how far you can go.** You can integrate voice. You can build a full interactive experience. Sky is the limit. The more ambitious and polished, the better.
 
-## What We're Testing
+## How The Agent Works
 
-### 1. Deep Technical Accuracy
+At a high level:
 
-Your agent needs to answer questions like these correctly:
+1. The user asks a question in text or voice.
+2. The backend orchestrator classifies the request.
+3. Retrieval gathers likely relevant manual pages and structured data.
+4. Vision is used when the question depends on diagrams, polarity layouts, weld visuals, or page-level imagery.
+5. Diagnostic reasoning is used when the question looks like troubleshooting.
+6. Artifact generation is used when a visual or interactive answer would help more than text alone.
+7. The frontend streams the answer live, renders images/artifacts, and optionally reads the final answer aloud.
 
-- "What's the duty cycle for MIG welding at 200A on 240V?"
-- "I'm getting porosity in my flux-cored welds. What should I check?"
-- "What polarity setup do I need for TIG welding? Which socket does the ground clamp go in?"
+## Retrieval Strategy
 
-We will test with questions that require cross-referencing multiple manual sections, understanding visual content (diagrams, schematics, charts), and handling ambiguous questions that need clarification from the user.
+The manual is preprocessed into cached page and chunk data. Search uses a hybrid approach:
 
-### 2. Multimodal Responses
+- BM25 / lexical matching
+- semantic embeddings
+- lightweight query-type heuristics for settings, troubleshooting, polarity, duty cycle, and visual questions
 
-This is the most important part. Your agent must not be text-only.
+This helps the app stay practical on narrow product questions where wording can vary a lot but the source material is fixed.
 
-- If someone asks about polarity setup, the agent should draw or show a diagram of which cable goes in which socket, not just describe it.
-- If the answer relates to a specific image in the manual (the wire feed mechanism, the front panel controls, the weld diagnosis examples), the agent should surface that image.
-- If a question is complex enough, the agent should generate interactive content: a duty cycle calculator, a troubleshooting flowchart, a settings configurator that takes process + material + thickness and outputs recommended wire speed and voltage.
+## Voice Support
 
-When something is too cognitively hard to explain in words, the agent should draw it. Real-time diagrams, interactive schematics, visual walkthroughs generated through code.
+The frontend supports:
 
-For your agent to handle these responses well you need to reverse engineer Claude artifacts. Here are two places where you can start:
-- https://claude.ai/artifacts (see how Claude renders interactive artifacts in chat)
-- https://www.reidbarber.com/blog/reverse-engineering-claude-artifacts
+- hold-to-talk voice input
+- auto-speak on assistant replies
+- manual speak / stop controls
+- simple voice commands like:
+  - `show me the page`
+  - `open the diagram`
+  - `read that again`
+  - `stop`
 
-### 3. Tone and Helpfulness
+Speech output behavior:
 
-Imagine your user just bought this welder and is standing in their garage trying to set it up. They're not an idiot, but they're not a professional welder either.
+- Local development can use backend-generated local TTS when available.
+- Hosted deployments are configured to use browser speech synthesis instead, which is more reliable on free Linux hosts.
 
-### 4. Knowledge Extraction Quality
+## Local Setup
 
-The manual has a mix of text, tables, labeled diagrams, schematics, and decision matrices. Some critical information exists only in images (the welding process selection chart, the weld diagnosis photos, the wiring schematic). We want to see that your agent understands and presents the visual content, not just the text.
+### Requirements
 
-## Tech Requirements
+- Python 3.11+
+- Node.js 20+
+- an Anthropic API key
 
-- Use the [Anthropic Claude Agent SDK](https://docs.anthropic.com) as the foundation for your agent.
-- The project must run locally with a single API key provided via `.env`.
-- You are responsible for your own API costs during development.
+### 1. Install backend dependencies
 
-## How to Present Your Work
-
-**This matters.** Your submission is not just the code — it's how you present it.
-
-- **Build a frontend.** The best way for us to evaluate your agent is if it has a clean, simple UI we can run immediately. This is realistically the only way to properly demo an agent like this.
-- **Hosting is a plus.** If you host it somewhere we can access without cloning, that's a strong signal. Not required, but it removes friction and shows initiative.
-- **Write a clear README.** Explain how your agent works, what design decisions you made, how knowledge is extracted and represented, and how to run it. Your documentation will be evaluated — we want to see how you think and communicate, not just how you code.
-- **Video walkthrough is a huge plus.** Record yourself demoing the agent and explaining your approach. Walk through the hard questions, show how it handles multimodal responses, explain your architecture. This gives us a much richer picture of your work than code alone.
-
-We should be running your agent within 2 minutes of cloning your repo:
+This repo uses `uv` for Python dependency management.
 
 ```bash
-git clone <your-fork>
-cd <your-fork>
-cp .env.example .env   # we plug in our own Anthropic API key
-# your install command (npm install, uv install, etc.)
-# your run command (npm run dev, python app.py, etc.)
+uv sync
 ```
 
-If it takes longer than that to set up, that's a problem.
+If you do not have `uv` installed yet:
 
-## What to Submit
+```bash
+pip install uv
+```
 
-1. Fork this repo.
-2. Build your solution.
-3. Submit your fork URL through the form at [useprox.com/join/challenge](https://useprox.com/join/challenge).
+### 2. Install frontend dependencies
 
-## What Happens Next
+```bash
+cd frontend
+npm install
+cd ..
+```
 
-We review submissions on a rolling basis and respond to every single one within a few days. Good luck.
+### 3. Configure environment variables
+
+Create a `.env` file in the project root:
+
+```bash
+ANTHROPIC_API_KEY=your_key_here
+```
+
+Optional local settings:
+
+```bash
+FRONTEND_ORIGIN=http://localhost:5173
+STRICT_STARTUP_VALIDATION=false
+PROX_HOSTED_DEMO=false
+ENABLE_LOCAL_TTS=true
+```
+
+### 4. Run the backend
+
+```bash
+uv run uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+### 5. Run the frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5173
+```
+
+## Hosted Deployment
+
+This repo is prepared for a simple free-tier split deployment:
+
+- frontend on Vercel
+- backend on Render
+
+Recommended hosted env settings:
+
+### Backend
+
+```bash
+PROX_HOSTED_DEMO=true
+ENABLE_LOCAL_TTS=false
+STRICT_STARTUP_VALIDATION=false
+FRONTEND_ORIGIN=https://your-frontend-domain.example
+CORS_ALLOWED_ORIGINS=https://your-frontend-domain.example
+ANTHROPIC_API_KEY=your_key_here
+```
+
+### Frontend
+
+```bash
+VITE_API_BASE_URL=https://your-backend-domain.example
+```
+
+
+## Suggested Demo Questions
+
+- `What polarity setup do I need for TIG welding? Which socket does the ground clamp go in?`
+- `I'm getting porosity in my flux-cored welds. What should I check?`
+- `Which welding process should I use for thin sheet steel at home?`
+- `How do I set up for MIG on 1/4 inch mild steel?`
+
+## Project Structure
+
+```text
+.
+├── agents/            # orchestration and specialist agents
+├── app/               # FastAPI app, config, service wiring
+├── cache/             # processed manual artifacts, page images, speech cache
+├── files/             # source manuals
+├── frontend/          # Vite + React client
+├── preprocessing/     # document extraction and indexing
+├── tools/             # retrieval, TTS, page handling, embeddings
+├── main.py            # backend entrypoint
+├── render.yaml        # Render deployment config
+└── challenge_README.md
+```

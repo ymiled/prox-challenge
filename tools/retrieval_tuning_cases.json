@@ -1,0 +1,62 @@
+[
+  {
+    "id": "duty_cycle_mig_200a_240v",
+    "query": "What's the duty cycle for MIG welding at 200A on 240V?",
+    "query_type": "duty_cycle",
+    "acceptable_pages": [
+      {"doc": "owner-manual", "page": 7},
+      {"doc": "owner-manual", "page": 19},
+      {"doc": "owner-manual", "page": 29}
+    ],
+    "expected_structured_keys": ["duty_cycles"],
+    "notes": "Any duty-cycle source page is acceptable as long as the result can answer the exact spec."
+  },
+  {
+    "id": "tig_polarity_socket",
+    "query": "What polarity setup do I need for TIG welding? Which socket does the ground clamp go in?",
+    "query_type": "visual_setup",
+    "acceptable_pages": [
+      {"doc": "owner-manual", "page": 24}
+    ],
+    "preferred_top1": {"doc": "owner-manual", "page": 24},
+    "needs_visual_page": true,
+    "notes": "The ideal hit is the TIG setup page with the exact socket assignments."
+  },
+  {
+    "id": "flux_porosity",
+    "query": "I'm getting porosity in my flux-cored welds. What should I check?",
+    "query_type": "troubleshooting",
+    "acceptable_pages": [
+      {"doc": "owner-manual", "page": 37},
+      {"doc": "owner-manual", "page": 40},
+      {"doc": "owner-manual", "page": 43},
+      {"doc": "owner-manual", "page": 44}
+    ],
+    "expected_structured_keys": ["troubleshooting"],
+    "needs_visual_page": true,
+    "notes": "Diagnosis pages and troubleshooting pages should rank highly."
+  },
+  {
+    "id": "thin_sheet_process",
+    "query": "Which welding process should I use for thin sheet steel at home?",
+    "query_type": "process_selection",
+    "acceptable_pages": [
+      {"doc": "owner-manual", "page": 18},
+      {"doc": "selection-chart", "page": 1}
+    ],
+    "preferred_top1": {"doc": "selection-chart", "page": 1},
+    "needs_visual_page": true,
+    "notes": "This should surface the process selection chart and/or the MIG-vs-flux thin-workpiece guidance."
+  },
+  {
+    "id": "selection_chart_explicit",
+    "query": "I need the selection chart for choosing a process.",
+    "query_type": "process_selection",
+    "acceptable_pages": [
+      {"doc": "selection-chart", "page": 1}
+    ],
+    "preferred_top1": {"doc": "selection-chart", "page": 1},
+    "needs_visual_page": true,
+    "notes": "The selection chart should be the top hit."
+  }
+]

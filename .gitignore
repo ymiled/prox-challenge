@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+cache/
+frontend/node_modules/
+frontend/dist/
+
+debugging_md/
+models/

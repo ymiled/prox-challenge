@@ -1,0 +1,7 @@
+[2m12:08:03[22m [33m[1m[vite][22m[39m [33mwarning: `esbuild` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `oxc` instead.[39m
+`optimizeDeps.rollupOptions` / `ssr.optimizeDeps.rollupOptions` is deprecated. Use `optimizeDeps.rolldownOptions` instead. Note that this option may be set by a plugin. Set VITE_DEPRECATION_TRACE=1 to see where it is called.
+[vite:react-babel] We recommend switching to `@vitejs/plugin-react-oxc` for improved performance. More information at https://vite.dev/rolldown
+[33mWarning: Invalid input options (1 issue found)
+- For the "jsx". Invalid key: Expected never but received "jsx". [0m
+[33mWarning: Invalid input options (1 issue found)
+- For the "jsx". Invalid key: Expected never but received "jsx". [0m
