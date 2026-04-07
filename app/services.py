@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import traceback
 from typing import AsyncIterator
@@ -107,7 +108,8 @@ class AppServices:
 
     async def stream_answer(self, request: ChatRequest) -> AsyncIterator[str]:
         try:
-            async for event in self.orchestrator.stream(request.message, request.history, request.voice_mode):
+            orchestrator = self._runtime_orchestrator(request.anthropic_api_key)
+            async for event in orchestrator.stream(request.message, request.history, request.voice_mode):
                 event_type = event.get("type")
 
                 if event_type == "text_delta":
@@ -157,6 +159,25 @@ class AppServices:
 
     def _event(self, event_type: str, payload: dict) -> str:
         return f"data: {json.dumps({'type': event_type, **payload})}\n\n"
+
+    def _runtime_orchestrator(self, api_key: str | None) -> OrchestratorAgent:
+        cleaned_key = (api_key or "").strip()
+        if not cleaned_key:
+            return self.orchestrator
+
+        runtime_settings = copy.copy(self.settings)
+        runtime_settings.api_key = cleaned_key
+        diagnostic_agent = DiagnosticAgent(runtime_settings)
+        artifact_agent = ArtifactAgent(runtime_settings)
+        vision_agent = VisionAgent(runtime_settings, self.page_store)
+        return OrchestratorAgent(
+            settings=runtime_settings,
+            retrieval_agent=self.retrieval_agent,
+            vision_agent=vision_agent,
+            diagnostic_agent=diagnostic_agent,
+            artifact_agent=artifact_agent,
+            page_store=self.page_store,
+        )
 
     def get_artifact(self, artifact_id: str) -> dict | None:
         return self.artifact_store.get(artifact_id)

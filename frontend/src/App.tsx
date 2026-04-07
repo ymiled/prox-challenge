@@ -129,6 +129,8 @@ function pickEnglishVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice 
 export default function App() {
   const [messages, setMessages] = useState<MessageType[]>([])
   const [input, setInput] = useState('')
+  const [anthropicApiKey, setAnthropicApiKey] = useState('')
+  const [serverHasAnthropicKey, setServerHasAnthropicKey] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [voiceMode, setVoiceMode] = useState(true)
   const [autoSpeak, setAutoSpeak] = useState(true)
@@ -154,6 +156,14 @@ export default function App() {
   const speechSupported = true
   const recognitionSupported = typeof window !== 'undefined' && getSpeechRecognitionCtor() !== null
   const voiceEngineLabel = localTtsEnabled && localTtsReady ? 'Using local voice' : browserSpeechSupported ? 'Using browser voice' : 'Voice unavailable'
+  const effectiveAnthropicKey = anthropicApiKey.trim()
+  const requiresUserKey = !serverHasAnthropicKey
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const savedKey = window.sessionStorage.getItem('prox_anthropic_api_key')
+    if (savedKey) setAnthropicApiKey(savedKey)
+  }, [])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -167,11 +177,13 @@ export default function App() {
         if (!active) return
         setLocalTtsEnabled(Boolean(payload.local_tts_enabled))
         setLocalTtsReady(Boolean(payload.local_tts_ready))
+        setServerHasAnthropicKey(Boolean((payload as { anthropic_enabled?: boolean }).anthropic_enabled))
       })
       .catch(() => {
         if (!active) return
         setLocalTtsEnabled(false)
         setLocalTtsReady(false)
+        setServerHasAnthropicKey(false)
       })
     return () => {
       active = false
@@ -419,6 +431,10 @@ export default function App() {
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed || isLoading) return
+      if (requiresUserKey && !effectiveAnthropicKey) {
+        setVoiceError('Enter your Anthropic API key first. It is stored only in this browser tab for the current session.')
+        return
+      }
 
       setInput('')
       setIsLoading(true)
@@ -539,7 +555,7 @@ export default function App() {
               setVoiceError(event.message)
             },
           },
-          { voiceMode }
+          { voiceMode, anthropicApiKey: effectiveAnthropicKey }
         )
       } catch (err) {
         streamingTextRef.current = ''
@@ -555,7 +571,7 @@ export default function App() {
         setVoiceError(err instanceof Error ? err.message : 'Connection failed')
       }
     },
-    [autoSpeak, isLoading, messages, primeBrowserSpeech, voiceMode]
+    [autoSpeak, effectiveAnthropicKey, isLoading, messages, primeBrowserSpeech, requiresUserKey, voiceMode]
   )
 
   const stopListening = useCallback(() => {
@@ -675,6 +691,15 @@ export default function App() {
     e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
   }
 
+  const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nextValue = e.target.value
+    setAnthropicApiKey(nextValue)
+    if (typeof window !== 'undefined') {
+      if (nextValue.trim()) window.sessionStorage.setItem('prox_anthropic_api_key', nextValue)
+      else window.sessionStorage.removeItem('prox_anthropic_api_key')
+    }
+  }
+
   const hasMessages = messages.length > 0
 
   return (
@@ -728,6 +753,23 @@ export default function App() {
                 <p className="text-sm text-slate-400 max-w-sm mb-8">
                   Hold the mic to talk. Prox can read answers aloud and respond to simple voice commands.
                 </p>
+                {requiresUserKey && (
+                  <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-left shadow-sm mb-6">
+                    <p className="text-sm font-semibold text-amber-900 mb-1">Bring your own Anthropic key</p>
+                    <p className="text-xs text-amber-800 mb-3">
+                      Enter your key to use the assistant. It is masked in the UI and stored only in this browser tab for the current session.
+                    </p>
+                    <input
+                      type="password"
+                      value={anthropicApiKey}
+                      onChange={handleApiKeyChange}
+                      placeholder="sk-ant-..."
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none"
+                    />
+                  </div>
+                )}
                 <div className="grid grid-cols-1 gap-2 w-full max-w-md">
                   {SUGGESTED_QUESTIONS.map((q) => (
                     <button
@@ -762,6 +804,26 @@ export default function App() {
               }}
               className="space-y-2"
             >
+              {requiresUserKey && (
+                <div className="space-y-1">
+                  <label htmlFor="anthropic-api-key" className="block text-xs font-medium text-slate-500 pl-1">
+                    Anthropic API key
+                  </label>
+                  <input
+                    id="anthropic-api-key"
+                    type="password"
+                    value={anthropicApiKey}
+                    onChange={handleApiKeyChange}
+                    placeholder="sk-ant-..."
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full rounded-xl border border-slate-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 transition-colors"
+                  />
+                  <p className="text-[11px] text-slate-400 pl-1">
+                    Stored only in this browser tab for the current session.
+                  </p>
+                </div>
+              )}
               <div className="flex items-end gap-2">
                 <textarea
                   ref={textareaRef}
@@ -770,7 +832,7 @@ export default function App() {
                   onKeyDown={handleKeyDown}
                   placeholder={isListening ? 'Listening...' : 'Ask about the Vulcan OmniPro 220...'}
                   rows={1}
-                  disabled={isLoading}
+                  disabled={isLoading || (requiresUserKey && !effectiveAnthropicKey)}
                   className="flex-1 resize-none rounded-xl border border-slate-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 disabled:bg-slate-50 disabled:text-slate-400 transition-colors"
                   style={{ minHeight: '44px', maxHeight: '160px' }}
                 />
@@ -790,7 +852,7 @@ export default function App() {
                     endHoldToTalk()
                   }}
                   onContextMenu={(e) => e.preventDefault()}
-                  disabled={!recognitionSupported || isLoading}
+                  disabled={!recognitionSupported || isLoading || (requiresUserKey && !effectiveAnthropicKey)}
                   className={`flex-shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors shadow-sm border ${
                     isListening
                       ? 'bg-red-50 text-red-700 border-red-200'
@@ -802,7 +864,7 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isLoading || !input.trim()}
+                  disabled={isLoading || !input.trim() || (requiresUserKey && !effectiveAnthropicKey)}
                   className="flex-shrink-0 bg-orange-500 hover:bg-orange-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl px-5 py-2.5 text-sm font-semibold transition-colors shadow-sm"
                   style={{ height: '44px' }}
                 >

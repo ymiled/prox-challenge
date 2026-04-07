@@ -15,6 +15,7 @@ export interface StreamCallbacks {
 
 export interface StreamChatOptions {
   voiceMode?: boolean
+  anthropicApiKey?: string
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
@@ -53,7 +54,12 @@ function buildNetworkError(path: string, error: unknown): Error {
   return new Error(details.join(' '))
 }
 
-export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_tts_enabled?: boolean; deployment_env?: string }> {
+export async function fetchHealth(): Promise<{
+  local_tts_ready?: boolean
+  local_tts_enabled?: boolean
+  deployment_env?: string
+  anthropic_enabled?: boolean
+}> {
   let response: Response
   try {
     response = await fetch(apiUrl('/health'))
@@ -63,7 +69,12 @@ export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
-  return (await response.json()) as { local_tts_ready?: boolean; local_tts_enabled?: boolean; deployment_env?: string }
+  return (await response.json()) as {
+    local_tts_ready?: boolean
+    local_tts_enabled?: boolean
+    deployment_env?: string
+    anthropic_enabled?: boolean
+  }
 }
 
 export async function synthesizeSpeech(text: string): Promise<string> {
@@ -96,7 +107,12 @@ export async function streamChat(
     response = await fetch(apiUrl('/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history, voice_mode: Boolean(options.voiceMode) }),
+      body: JSON.stringify({
+        message,
+        history,
+        voice_mode: Boolean(options.voiceMode),
+        anthropic_api_key: options.anthropicApiKey?.trim() || undefined,
+      }),
     })
   } catch (error) {
     callbacks.onError({ type: 'error', message: buildNetworkError('/chat', error).message })

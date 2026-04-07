@@ -106,6 +106,8 @@ Create a `.env` file in the project root:
 ANTHROPIC_API_KEY=your_key_here
 ```
 
+If you do not want to deploy a shared server-side Anthropic key, the frontend also supports a bring-your-own-key flow. In that mode, each user enters their own Anthropic key in the UI and the app sends it with chat requests for the current browser session only.
+
 Optional local settings:
 
 ```bash
@@ -146,7 +148,6 @@ Deployment files:
 Suggested Fly secrets / env vars:
 
 ```bash
-ANTHROPIC_API_KEY=your_key_here
 FRONTEND_ORIGIN=https://your-frontend-domain.example
 CORS_ALLOWED_ORIGINS=https://your-frontend-domain.example
 DEPLOYMENT_ENV=fly
@@ -160,11 +161,12 @@ Typical Fly workflow:
 
 ```bash
 fly launch --no-deploy
-fly secrets set ANTHROPIC_API_KEY=your_key_here
 fly secrets set FRONTEND_ORIGIN=https://your-frontend-domain.example
 fly secrets set CORS_ALLOWED_ORIGINS=https://your-frontend-domain.example
 fly deploy
 ```
+
+For reviewer demos, you can omit `ANTHROPIC_API_KEY` from Fly entirely and let each reviewer paste their own key into the app. That is reasonable for a demo, but it should be described as bring-your-own-key demo mode rather than production-grade secret handling.
 
 The included `fly.toml` targets:
 

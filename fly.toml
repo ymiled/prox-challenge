@@ -1,25 +1,30 @@
-app = "prox-challenge-backend"
-primary_region = "iad"
+# fly.toml app configuration file generated for prox-challenge-backend-solitary-meadow-9295 on 2026-04-06T23:14:05-07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'prox-challenge-backend-solitary-meadow-9295'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  DEPLOYMENT_ENV = "fly"
-  ENABLE_LOCAL_TTS = "false"
-  ENABLE_SEMANTIC_SEARCH = "false"
-  STRICT_STARTUP_VALIDATION = "false"
-  PAGE_RENDER_DPI = "120"
-  PORT = "8000"
+  DEPLOYMENT_ENV = 'fly'
+  ENABLE_LOCAL_TTS = 'false'
+  ENABLE_SEMANTIC_SEARCH = 'false'
+  PAGE_RENDER_DPI = '120'
+  PORT = '8000'
+  STRICT_STARTUP_VALIDATION = 'false'
 
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "2gb"
+  size = 'shared-cpu-2x'
+  memory = '2gb'

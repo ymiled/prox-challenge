@@ -14,6 +14,7 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = Field(default_factory=list)
     include_image_data: bool = False
     voice_mode: bool = False
+    anthropic_api_key: str | None = Field(default=None, min_length=1)
 
 
 class SpeechRequest(BaseModel):
