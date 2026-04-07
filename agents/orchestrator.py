@@ -310,7 +310,7 @@ class OrchestratorAgent(ClaudeAgent):
             "structured_hits": {},
         })
 
-    # ─── Ambiguity / clarification ───────────────────────────────────────────────
+    # Ambiguity / clarification
 
     def _clarity_level_from_reasons(self, reasons: list[str]) -> str:
         if not reasons:
@@ -747,7 +747,14 @@ class OrchestratorAgent(ClaudeAgent):
             return "html"
         return "text"
 
-    # ─── LLM context prompt ────────────────────────────────────────────────────
+    # LLM context prompt
+
+    def _full_text_for_page(self, page: Any, engine: Any) -> str:
+        """Retrieve the full text for a PageRef from the search index."""
+        for entry in engine.search_index:
+            if entry.get("doc") == page.doc and entry.get("page") == page.page:
+                return engine._entry_text(entry)
+        return page.excerpt or ""
 
     def _build_user_prompt(
         self,
@@ -809,14 +816,16 @@ class OrchestratorAgent(ClaudeAgent):
                 "Lead with the answer in 1-3 short sentences before any extra detail."
             )
 
-        # Manual text excerpts with page citations
-        if retrieval.excerpts:
-            pairs = list(zip(retrieval.pages, retrieval.excerpts))
-            lines = "\n".join(
-                f"  [{p.doc} p.{p.page}]: {exc.strip()}"
-                for p, exc in pairs[:4]
-            )
-            blocks.append(f"MANUAL CONTEXT:\n{lines}")
+        # Manual text excerpts with page citations (contextually compressed)
+        if retrieval.pages:
+            engine = self.retrieval_agent.search_engine
+            lines = []
+            for p in retrieval.pages[:4]:
+                full_text = self._full_text_for_page(p, engine)
+                compressed = engine.compress(message, full_text)
+                lines.append(f"  [{p.doc} p.{p.page}]: {compressed.strip()}")
+            if lines:
+                blocks.append(f"MANUAL CONTEXT:\n" + "\n".join(lines))
 
         # Structured duty-cycle table
         if mode["query_type"] == "duty_cycle":
@@ -867,7 +876,7 @@ class OrchestratorAgent(ClaudeAgent):
         context = "\n\n".join(blocks)
         return f"User question: {message}\n\n{context}\n\nAnswer based on the context above."
 
-    # ─── Artifact spec builder ─────────────────────────────────────────────────
+    # Artifact spec builder
 
     def _build_artifact_spec(
         self,

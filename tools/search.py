@@ -16,11 +16,16 @@ try:
 except Exception:  # pragma: no cover
     BM25Okapi = None
 
+try:
+    from sentence_transformers import CrossEncoder
+except Exception:  # pragma: no cover
+    CrossEncoder = None
+
 
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-]+", re.I)
 
 
-class ManualSearchEngine:
+class ManualSearchEngine:   
     def __init__(self, settings: Settings, embedding_client: LocalEmbeddingClient | None = None) -> None:
         self.settings = settings
         self.embedding_client = embedding_client or LocalEmbeddingClient(settings)
@@ -36,6 +41,8 @@ class ManualSearchEngine:
         self._embedding_cache_path = settings.structured_dir / "page_embeddings.json"
         self._embedding_cache = read_json(self._embedding_cache_path, {})
         self._bm25: Any = None
+        self._cross_encoder: Any = None
+        self._cross_encoder_disabled: str | None = None
         if self.search_index and BM25Okapi is not None:
             tokenized = [self._tokenize(self._document_text(entry)) for entry in self.search_index]
             corpus = [tokens if tokens else ["_"] for tokens in tokenized]
@@ -222,7 +229,69 @@ class ManualSearchEngine:
     def _rerank(self, query: str, candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
         if not candidates:
             return []
-        return candidates[:limit]
+        if not self.settings.cross_encoder_enabled or CrossEncoder is None:
+            return candidates[:limit]
+        model = self._load_cross_encoder()
+        if model is None:
+            return candidates[:limit]
+        # Run the cross-encoder over top-N candidates (limit * 3) to bound latency
+        pool = candidates[: limit * 3]
+        pairs = [
+            (query, self._entry_text(item["entry"]) or item["entry"].get("excerpt", ""))
+            for item in pool
+        ]
+        try:
+            scores = model.predict(pairs, show_progress_bar=False)
+        except Exception as exc:
+            self._cross_encoder_disabled = str(exc)
+            return candidates[:limit]
+        for item, score in zip(pool, scores):
+            item["cross_score"] = float(score)
+        pool.sort(key=lambda x: x.get("cross_score", 0.0), reverse=True)
+        return pool[:limit]
+
+    def _load_cross_encoder(self) -> Any:
+        if self._cross_encoder is not None:
+            return self._cross_encoder
+        if self._cross_encoder_disabled is not None or CrossEncoder is None:
+            return None
+        try:
+            source = (
+                str(self.settings.cross_encoder_model_path)
+                if self.settings.cross_encoder_model_path.exists()
+                else self.settings.cross_encoder_model
+            )
+            self._cross_encoder = CrossEncoder(source)
+        except Exception as exc:
+            self._cross_encoder_disabled = str(exc)
+            return None
+        return self._cross_encoder
+
+    def compress(self, query: str, text: str, max_sentences: int | None = None) -> str:
+        """Return the most relevant sentences from text using query embedding similarity."""
+        if max_sentences is None:
+            max_sentences = self.settings.compression_max_sentences
+        if not self.settings.contextual_compression_enabled:
+            return safe_excerpt(text)
+        if not self.embedding_client.enabled or not text.strip():
+            return safe_excerpt(text)
+        sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if len(s.strip()) > 20]
+        if not sentences or len(sentences) <= max_sentences:
+            return text
+        query_vec = self.embedding_client.embed_query(query)
+        if not query_vec:
+            return safe_excerpt(text)
+        sentence_vecs = self.embedding_client.embed_texts(sentences)
+        if not sentence_vecs:
+            return safe_excerpt(text)
+        scored = sorted(
+            enumerate(cosine_similarity(query_vec, sv) for sv in sentence_vecs),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        top_indices = sorted(idx for idx, _ in scored[:max_sentences])
+        compressed = " ".join(sentences[i] for i in top_indices)
+        return compressed.strip() or safe_excerpt(text)
 
     def _search_structured(self, query: str, query_profile: dict[str, Any]) -> dict[str, Any]:
         lowered = query.lower()

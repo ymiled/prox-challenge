@@ -63,6 +63,18 @@ class Settings:
         # Hybrid RAG: dense (embeddings) vs sparse (BM25 over page index)
         self.semantic_weight = float(os.getenv("RAG_SEMANTIC_WEIGHT", "0.45"))
         self.sparse_weight = float(os.getenv("RAG_SPARSE_WEIGHT", os.getenv("RAG_LEXICAL_WEIGHT", "0.55")))
+        # Cross-encoder reranking
+        self.cross_encoder_enabled = os.getenv("ENABLE_CROSS_ENCODER", "true").strip().lower() == "true"
+        self.cross_encoder_model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        self.cross_encoder_model_path = self.models_dir / "cross-encoder" / self.cross_encoder_model.replace("/", "__")
+        # Contextual compression
+        self.contextual_compression_enabled = os.getenv("ENABLE_CONTEXTUAL_COMPRESSION", "true").strip().lower() == "true"
+        self.compression_max_sentences = int(os.getenv("COMPRESSION_MAX_SENTENCES", "6"))
+        # Vision caching
+        self.vision_cache_enabled = os.getenv("ENABLE_VISION_CACHE", "true").strip().lower() == "true"
+        # Response caching
+        self.response_cache_enabled = os.getenv("ENABLE_RESPONSE_CACHE", "true").strip().lower() == "true"
+        self.response_cache_max_size = int(os.getenv("RESPONSE_CACHE_MAX_SIZE", "200"))
 
     @property
     def cache_ready_file(self) -> Path:

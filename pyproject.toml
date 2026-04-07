@@ -1,7 +1,7 @@
 [project]
-name = "prox-challenge"
+name = "vulcan-omnipro-assistant"
 version = "0.1.0"
-description = "Backend agentic architecture for the Prox founding engineer challenge."
+description = "Backend agentic architecture for the Vulcan OmniPro Assistant."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-prox-backend = "main:app"
+vulcan-omnipro-assistant-backend = "main:app"
 
 [build-system]
 requires = ["hatchling"]

@@ -10,6 +10,7 @@ from anthropic import AsyncAnthropic
 from agents import ArtifactAgent, DiagnosticAgent, OrchestratorAgent, RetrievalAgent, VisionAgent
 from app.config import Settings
 from app.models import ChatRequest, PageRef
+from app.response_cache import ResponseCache
 from preprocessing import Preprocessor
 from tools import LocalEmbeddingClient, LocalTTS, ManualSearchEngine, PageStore
 
@@ -33,6 +34,9 @@ class AppServices:
         self.diagnostic_agent = DiagnosticAgent(settings)
         self.artifact_agent = ArtifactAgent(settings)
         self.artifact_store: dict[str, dict] = {}
+        self._response_cache: ResponseCache | None = (
+            ResponseCache(settings.response_cache_max_size) if settings.response_cache_enabled else None
+        )
         self.orchestrator = OrchestratorAgent(
             settings=self.settings,
             retrieval_agent=self.retrieval_agent,
@@ -107,13 +111,28 @@ class AppServices:
             return {}
 
     async def stream_answer(self, request: ChatRequest) -> AsyncIterator[str]:
+        # Only cache when no per-request API key is supplied (shared key = deterministic context)
+        use_cache = self._response_cache is not None and not (request.anthropic_api_key or "").strip()
+        cache_key: str | None = None
+
+        if use_cache:
+            page_keys = [e.get("doc", "") + ":" + str(e.get("page", "")) for e in self.search_engine.page_index]
+            cache_key = self._response_cache.make_key(request.message, page_keys)
+            cached = self._response_cache.get(cache_key)
+            if cached is not None:
+                for event_str in cached:
+                    yield event_str
+                return
+
+        collected: list[str] = []
+
         try:
             orchestrator = self._runtime_orchestrator(request.anthropic_api_key)
             async for event in orchestrator.stream(request.message, request.history, request.voice_mode):
                 event_type = event.get("type")
 
                 if event_type == "text_delta":
-                    yield self._event("text_delta", {"content": event["content"]})
+                    evt = self._event("text_delta", {"content": event["content"]})
 
                 elif event_type == "image":
                     payload = {
@@ -127,7 +146,7 @@ class AppServices:
                         encoded = self.page_store.get_page_image_base64(ref)
                         if encoded:
                             payload["src"] = f"data:image/png;base64,{encoded}"
-                    yield self._event("image", payload)
+                    evt = self._event("image", payload)
 
                 elif event_type == "artifact":
                     artifact = event["artifact"]
@@ -136,7 +155,7 @@ class AppServices:
                         "title": artifact.title,
                         "content": artifact.content,
                     }
-                    yield self._event("artifact", {
+                    evt = self._event("artifact", {
                         "artifact": {
                             "artifact_id": artifact.artifact_id,
                             "artifact_type": artifact.artifact_type,
@@ -146,14 +165,20 @@ class AppServices:
                     })
 
                 elif event_type == "done":
-                    yield self._event("done", {
+                    evt = self._event("done", {
                         "citations": event.get("citations", []),
                         "debug": event.get("debug", {}),
                     })
 
                 else:
-                    # Forward unknown event types as-is
-                    yield self._event(event_type or "unknown", {k: v for k, v in event.items() if k != "type"})
+                    evt = self._event(event_type or "unknown", {k: v for k, v in event.items() if k != "type"})
+
+                if use_cache:
+                    collected.append(evt)
+                yield evt
+
+            if use_cache and cache_key and collected:
+                self._response_cache.put(cache_key, collected)
 
         except Exception as exc:
             yield self._event("error", {
@@ -183,6 +208,28 @@ class AppServices:
             artifact_agent=artifact_agent,
             page_store=self.page_store,
         )
+
+    async def build_vision_cache(self) -> int:
+        """Run VisionAgent on every visual page not yet in the cache. Returns count of pages processed."""
+        if not self.settings.vision_cache_enabled or not self.vision_agent.enabled:
+            return 0
+        processed = 0
+        for entry in self.search_engine.page_index:
+            page = PageRef(doc=entry["doc"], page=entry["page"])
+            if self.vision_agent._cache_key(page) in self.vision_agent._vision_cache:
+                continue
+            topics = entry.get("topics", [])
+            # Only process visually-rich pages
+            if not any(t in topics for t in ("polarity", "troubleshooting", "wire_settings", "duty_cycle", "visual")):
+                continue
+            try:
+                await self.vision_agent.run_single_page(page)
+                processed += 1
+            except Exception:
+                pass
+        if processed:
+            self.vision_agent._save_vision_cache()
+        return processed
 
     def get_artifact(self, artifact_id: str) -> dict | None:
         return self.artifact_store.get(artifact_id)

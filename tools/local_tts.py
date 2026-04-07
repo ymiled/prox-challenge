@@ -96,14 +96,14 @@ class LocalTTS:
     def _probe_windows_synthesis(self) -> bool:
         probe_path = self._probe_path("windows")
         try:
-            return self._synthesize_windows("Prox local voice readiness check.", probe_path)
+            return self._synthesize_windows("Vulcan OmniPro Assistant local voice readiness check.", probe_path)
         finally:
             probe_path.unlink(missing_ok=True)
 
     def _probe_pyttsx3_synthesis(self) -> bool:
         probe_path = self._probe_path("pyttsx3")
         try:
-            return self._run_pyttsx3("Prox local voice readiness check.", probe_path)
+            return self._run_pyttsx3("Vulcan OmniPro Assistant local voice readiness check.", probe_path)
         finally:
             probe_path.unlink(missing_ok=True)
 

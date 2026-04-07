@@ -642,7 +642,7 @@ CRITICAL — rules that must be followed exactly:
     def _mermaid_text(self, text: str) -> str:
         return str(text).replace('"', "'")
 
-    # ─── SVG diagram generation ────────────────────────────────────────────────
+    # SVG diagram generation
 
     async def _generate_svg(self, artifact_id: str, title: str, spec: dict) -> ArtifactResult | None:
         if not self.enabled:

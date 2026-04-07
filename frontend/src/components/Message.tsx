@@ -149,11 +149,11 @@ export default function Message({
       <div className={hasArtifacts ? 'max-w-full min-w-0 flex-1 space-y-2' : 'max-w-[85%] space-y-1'}>
         <div className="flex items-start gap-2 min-w-0">
           <div
-            className="mt-1 w-7 h-7 rounded-full bg-orange-100 border border-orange-200/80 flex items-center justify-center flex-shrink-0 text-[11px] font-semibold leading-none text-orange-700"
+            className="mt-1 h-7 px-2 rounded-full bg-orange-100 border border-orange-200/80 flex items-center justify-center flex-shrink-0 text-[11px] font-semibold leading-none text-orange-700"
             title="Assistant"
             aria-hidden
           >
-            AI
+            Vulcan
           </div>
           <div className="bg-white rounded-2xl rounded-tl-md px-4 py-3 shadow-sm border border-slate-100 flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">

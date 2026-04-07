@@ -6,5 +6,5 @@ cache/
 frontend/node_modules/
 frontend/dist/
 
-debugging_md/
+debugging/
 models/

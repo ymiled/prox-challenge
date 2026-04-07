@@ -24,7 +24,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     services = AppServices(settings)
 
-    app = FastAPI(title="Prox — Vulcan OmniPro 220 Assistant", version="0.2.0")
+    app = FastAPI(title="Vulcan OmniPro 220 Assistant", version="0.2.0")
 
     app.add_middleware(
         CORSMiddleware,
@@ -51,6 +51,8 @@ def create_app() -> FastAPI:
                 raise
         if not settings.deployed:
             services.ensure_cache()
+        # Build vision cache in background after startup (no-op if already cached)
+        asyncio.ensure_future(services.build_vision_cache())
 
     # on_event is deperecated, fix: 
 

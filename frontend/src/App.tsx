@@ -40,10 +40,7 @@ const SUGGESTED_QUESTIONS = [
   "What's the duty cycle for MIG welding at 200A on 240V?",
   'What polarity setup do I need for TIG welding? Which socket does the ground clamp go in?',
   "I'm getting porosity in my flux-cored welds. What should I check?",
-  'How do I set up for MIG on 1/4 inch mild steel? What voltage and wire feed speed?',
-  "I just unboxed my OmniPro 220 - what's a safe first-time setup checklist?",
   'Which welding process should I use for thin sheet steel at home?',
-  'What maintenance should I do on this welder to keep it running well?',
 ]
 
 const VOICE_COMMAND_HINTS = [
@@ -212,7 +209,7 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const savedKey = window.sessionStorage.getItem('prox_anthropic_api_key')
+    const savedKey = window.sessionStorage.getItem('vulcan_omnipro_assistant_anthropic_api_key')
     if (savedKey) {
       setAnthropicApiKey(savedKey)
       setApiKeyDraft(savedKey)
@@ -317,7 +314,7 @@ export default function App() {
     setApiKeyDraft('')
     setApiKeyGateError(message)
     if (typeof window !== 'undefined') {
-      window.sessionStorage.removeItem('prox_anthropic_api_key')
+      window.sessionStorage.removeItem('vulcan_omnipro_assistant_anthropic_api_key')
     }
   }, [])
 
@@ -839,7 +836,7 @@ export default function App() {
     setApiKeyGateError(null)
     setVoiceError(null)
     if (typeof window !== 'undefined') {
-      window.sessionStorage.setItem('prox_anthropic_api_key', nextValue)
+      window.sessionStorage.setItem('vulcan_omnipro_assistant_anthropic_api_key', nextValue)
     }
   }
 
@@ -894,14 +891,14 @@ export default function App() {
           </div>
         </div>
       )}
-      <header className={`flex-shrink-0 bg-slate-900 text-white px-6 py-3 flex items-center justify-between gap-4 shadow-lg z-10 transition-all ${showApiKeyGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
+      <header className={`flex-shrink-0 bg-slate-900 text-white px-4 py-2 flex items-center justify-between gap-4 shadow-lg z-10 transition-all ${showApiKeyGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center font-bold text-sm shadow-inner">
             P
           </div>
           <div>
-            <h1 className="font-bold text-base leading-none tracking-wide">PROX</h1>
-            <p className="text-slate-400 text-xs mt-0.5">Vulcan OmniPro 220 Assistant</p>
+            <h1 className="font-bold text-base leading-none tracking-wide">Vulcan OmniPro Assistant</h1>
+            <p className="text-slate-400 text-xs mt-0.5">Voice-first help for the Vulcan OmniPro 220</p>
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs">
@@ -926,20 +923,20 @@ export default function App() {
         <div className="flex flex-col w-full min-w-0">
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 chat-scroll">
             {!hasMessages && (
-              <div className="flex flex-col items-center justify-center h-full text-center px-4 py-12">
-                <div className="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center mb-4 text-2xl font-semibold text-orange-600">
-                  VOX
+              <div className="flex flex-col items-center justify-center h-full text-center px-4 py-6">
+                <div className="w-12 h-12 bg-orange-100 rounded-2xl flex items-center justify-center mb-3 text-lg font-semibold text-orange-600">
+                  P
                 </div>
-                <h2 className="text-lg font-semibold text-slate-700 mb-1">Vulcan OmniPro 220 Assistant</h2>
-                <p className="text-sm text-slate-400 max-w-sm mb-8">
-                  Tap the mic to start talking, then tap again to send. Prox can read answers aloud and respond to simple voice commands.
+                <h2 className="text-base font-semibold text-slate-700 mb-1">Vulcan OmniPro Assistant</h2>
+                <p className="text-xs text-slate-400 max-w-sm mb-5">
+                  Ask anything about setup, troubleshooting, or settings. Tap the mic to talk with Vulcan OmniPro Assistant.
                 </p>
                 <div className="grid grid-cols-1 gap-2 w-full max-w-md">
                   {SUGGESTED_QUESTIONS.map((q) => (
                     <button
                       key={q}
                       onClick={() => handleSubmit(q)}
-                      className="text-left text-sm text-slate-600 bg-white border border-slate-200 hover:border-orange-300 hover:bg-orange-50 rounded-xl px-4 py-3 transition-colors shadow-sm"
+                      className="text-left text-sm text-slate-600 bg-white border border-slate-200 hover:border-orange-300 hover:bg-orange-50 rounded-xl px-4 py-2.5 transition-colors shadow-sm"
                     >
                       {q}
                     </button>
