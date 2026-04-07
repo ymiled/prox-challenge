@@ -80,20 +80,23 @@ export async function fetchHealth(): Promise<{
 }
 
 export async function validateAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 6000)
   try {
-    const response = await fetch('https://api.anthropic.com/v1/models', {
-      headers: {
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-      },
+    const response = await fetch(apiUrl('/validate-key'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anthropic_api_key: key }),
+      signal: controller.signal,
     })
-    if (response.status === 401 || response.status === 403) {
-      return { valid: false, error: 'Invalid API key' }
+    return (await response.json()) as { valid: boolean; error?: string }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return { valid: false, error: 'Validation timed out. Check your connection and try again.' }
     }
-    return { valid: true }
-  } catch {
-    // Network error or CORS — accept the key and let the first chat call catch it
-    return { valid: true }
+    return { valid: false, error: 'Could not reach the server. Check your connection and try again.' }
+  } finally {
+    clearTimeout(timeout)
   }
 }
 

@@ -825,11 +825,11 @@ export default function App() {
     try {
       const result = await validateAnthropicKey(nextValue)
       if (!result.valid) {
-        setApiKeyGateError('API key rejected by Anthropic. Double-check it and try again.')
+        setApiKeyGateError(result.error ?? 'API key rejected. Double-check it and try again.')
         return
       }
-    } catch {
-      setApiKeyGateError('Could not reach the server to validate the key. Try again.')
+    } catch (e) {
+      setApiKeyGateError(e instanceof Error ? e.message : 'Could not reach the server. Try again.')
       return
     } finally {
       setIsValidatingKey(false)

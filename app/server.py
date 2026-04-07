@@ -3,13 +3,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
+import asyncio
+
+from anthropic import AsyncAnthropic, AuthenticationError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
 from app.config import get_settings
 from app.models import ChatRequest, SpeechRequest
 from app.services import AppServices
+
+
+class ValidateKeyRequest(BaseModel):
+    anthropic_api_key: str
 
 
 def create_app() -> FastAPI:
@@ -63,6 +71,22 @@ def create_app() -> FastAPI:
             "semantic_embed_model_cached": settings.semantic_embed_model_path.exists(),
             "startup": services.startup_status,
         })
+
+    @app.post("/validate-key")
+    async def validate_key(request: ValidateKeyRequest) -> JSONResponse:
+        key = request.anthropic_api_key.strip()
+        if not key:
+            return JSONResponse({"valid": False, "error": "No key provided"}, status_code=400)
+        try:
+            client = AsyncAnthropic(api_key=key)
+            await asyncio.wait_for(client.models.list(), timeout=5.0)
+            return JSONResponse({"valid": True})
+        except asyncio.TimeoutError:
+            return JSONResponse({"valid": False, "error": "Validation timed out"}, status_code=504)
+        except AuthenticationError:
+            return JSONResponse({"valid": False, "error": "Invalid API key"}, status_code=401)
+        except Exception as exc:
+            return JSONResponse({"valid": False, "error": str(exc)}, status_code=502)
 
     @app.post("/preprocess")
     async def preprocess() -> JSONResponse:
