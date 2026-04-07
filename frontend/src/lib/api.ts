@@ -80,17 +80,21 @@ export async function fetchHealth(): Promise<{
 }
 
 export async function validateAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {
-  let response: Response
   try {
-    response = await fetch(apiUrl('/validate-key'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ anthropic_api_key: key }),
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
     })
-  } catch (error) {
-    throw buildNetworkError('/validate-key', error)
+    if (response.status === 401 || response.status === 403) {
+      return { valid: false, error: 'Invalid API key' }
+    }
+    return { valid: true }
+  } catch {
+    // Network error or CORS — accept the key and let the first chat call catch it
+    return { valid: true }
   }
-  return (await response.json()) as { valid: boolean; error?: string }
 }
 
 export async function synthesizeSpeech(text: string): Promise<string> {
