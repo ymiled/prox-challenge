@@ -79,6 +79,20 @@ export async function fetchHealth(): Promise<{
   }
 }
 
+export async function validateAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {
+  let response: Response
+  try {
+    response = await fetch(apiUrl('/validate-key'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anthropic_api_key: key }),
+    })
+  } catch (error) {
+    throw buildNetworkError('/validate-key', error)
+  }
+  return (await response.json()) as { valid: boolean; error?: string }
+}
+
 export async function synthesizeSpeech(text: string): Promise<string> {
   let response: Response
   try {

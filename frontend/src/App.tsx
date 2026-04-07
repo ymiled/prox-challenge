@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Message from './components/Message'
-import { apiUrl, fetchHealth, streamChat, synthesizeSpeech } from './lib/api'
+import { apiUrl, fetchHealth, streamChat, synthesizeSpeech, validateAnthropicKey } from './lib/api'
 import { appendStreamText, repairConcatenatedWords } from './lib/joinStreamText'
 import { parseArtifacts } from './lib/parseArtifacts'
 import type { Artifact, ArtifactEvent, Message as MessageType, PageRef } from './lib/types'
@@ -181,8 +181,9 @@ export default function App() {
   const [serverHasAnthropicKey, setServerHasAnthropicKey] = useState(false)
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [apiKeyGateError, setApiKeyGateError] = useState<string | null>(null)
+  const [isValidatingKey, setIsValidatingKey] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [autoSpeak, setAutoSpeak] = useState(true)
+  const [autoSpeak, setAutoSpeak] = useState(false)
   const [isListening, setIsListening] = useState(false)
   const [voiceMissed, setVoiceMissed] = useState(false)
   const [voiceError, setVoiceError] = useState<string | null>(null)
@@ -369,8 +370,13 @@ export default function App() {
           setSpeakingMessageId((current) => (current === message.id ? null : current))
           setVoiceStatus('Answer ready')
         }
-        utterance.onerror = () => {
+        utterance.onerror = (e: Event) => {
+          const errorType = (e as SpeechSynthesisErrorEvent).error
           setSpeakingMessageId((current) => (current === message.id ? null : current))
+          if (errorType === 'interrupted' || errorType === 'canceled') {
+            setVoiceStatus('Answer ready')
+            return
+          }
           setVoiceStatus('Browser voice playback failed')
           setVoiceError('Speech playback failed. Tap Speak once to re-enable browser voice.')
         }
@@ -804,11 +810,29 @@ export default function App() {
     if (apiKeyGateError) setApiKeyGateError(null)
   }
 
-  const handleApiKeySave = () => {
+  const handleApiKeySave = async () => {
     const nextValue = apiKeyDraft.trim()
     if (!nextValue) {
       setApiKeyGateError('Enter your Anthropic API key to continue.')
       return
+    }
+    if (!nextValue.startsWith('sk-ant-') || nextValue.length < 40) {
+      setApiKeyGateError("That doesn't look like a valid Anthropic API key. It should start with sk-ant-")
+      return
+    }
+    setIsValidatingKey(true)
+    setApiKeyGateError(null)
+    try {
+      const result = await validateAnthropicKey(nextValue)
+      if (!result.valid) {
+        setApiKeyGateError('API key rejected by Anthropic. Double-check it and try again.')
+        return
+      }
+    } catch {
+      setApiKeyGateError('Could not reach the server to validate the key. Try again.')
+      return
+    } finally {
+      setIsValidatingKey(false)
     }
     setAnthropicApiKey(nextValue)
     setApiKeyDraft('')
@@ -848,15 +872,24 @@ export default function App() {
               placeholder="sk-ant-..."
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none"
+              disabled={isValidatingKey}
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
             />
             {apiKeyGateError && <p className="mt-3 text-sm text-red-600">{apiKeyGateError}</p>}
             <button
               type="button"
               onClick={handleApiKeySave}
-              className="mt-4 w-full rounded-xl bg-orange-500 hover:bg-orange-600 text-white px-4 py-3 text-sm font-semibold transition-colors shadow-sm"
+              disabled={isValidatingKey}
+              className="mt-4 w-full rounded-xl bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300 text-white px-4 py-3 text-sm font-semibold transition-colors shadow-sm flex items-center justify-center gap-2"
             >
-              Continue
+              {isValidatingKey ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Checking key...
+                </>
+              ) : (
+                'Continue'
+              )}
             </button>
           </div>
         </div>
