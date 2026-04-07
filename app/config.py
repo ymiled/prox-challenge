@@ -34,7 +34,6 @@ class Settings:
         self.models_dir = root / "models"
         default_embed_path = self.models_dir / "semantic" / self.semantic_embed_model.replace("/", "__")
         self.semantic_embed_model_path = default_embed_path
-        self.render_dpi = 180
         self.max_search_results = 6
         self.retrieval_candidate_pool = 12
         self.frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").strip()
@@ -50,6 +49,16 @@ class Settings:
             "ENABLE_LOCAL_TTS",
             "false" if self.hosted_demo else "true",
         ).strip().lower() == "true"
+        self.semantic_search_enabled = os.getenv(
+            "ENABLE_SEMANTIC_SEARCH",
+            "false" if self.hosted_demo else "true",
+        ).strip().lower() == "true"
+        self.render_dpi = int(
+            os.getenv(
+                "PAGE_RENDER_DPI",
+                "120" if self.hosted_demo else "180",
+            ).strip()
+        )
         # Hybrid RAG: dense (embeddings) vs sparse (BM25 over page index)
         self.semantic_weight = float(os.getenv("RAG_SEMANTIC_WEIGHT", "0.45"))
         self.sparse_weight = float(os.getenv("RAG_SPARSE_WEIGHT", os.getenv("RAG_LEXICAL_WEIGHT", "0.55")))

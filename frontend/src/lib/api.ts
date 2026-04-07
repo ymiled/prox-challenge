@@ -18,13 +18,48 @@ export interface StreamChatOptions {
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+const isBrowser = typeof window !== 'undefined'
 
 function apiUrl(path: string): string {
   return API_BASE ? `${API_BASE}${path}` : path
 }
 
+function buildNetworkError(path: string, error: unknown): Error {
+  const target = apiUrl(path)
+  const pageOrigin = isBrowser ? window.location.origin : 'unknown origin'
+  const protocolMismatch =
+    isBrowser &&
+    window.location.protocol === 'https:' &&
+    /^http:\/\//i.test(target)
+
+  const details = [
+    `Could not reach ${target}.`,
+    `Page origin: ${pageOrigin}.`,
+    API_BASE
+      ? `Configured API base: ${API_BASE}.`
+      : 'No VITE_API_BASE_URL is configured, so the frontend is calling its own origin.',
+  ]
+
+  if (protocolMismatch) {
+    details.push('The site is loaded over HTTPS but the API base uses HTTP, which browsers block as mixed content.')
+  } else {
+    details.push('Common causes: wrong VITE_API_BASE_URL, CORS not allowing the Vercel domain, backend sleeping or down on Render, or an invalid SSL certificate.')
+  }
+
+  if (error instanceof Error && error.message) {
+    details.push(`Browser error: ${error.message}`)
+  }
+
+  return new Error(details.join(' '))
+}
+
 export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_tts_enabled?: boolean; hosted_demo?: boolean }> {
-  const response = await fetch(apiUrl('/health'))
+  let response: Response
+  try {
+    response = await fetch(apiUrl('/health'))
+  } catch (error) {
+    throw buildNetworkError('/health', error)
+  }
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
@@ -32,11 +67,16 @@ export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_
 }
 
 export async function synthesizeSpeech(text: string): Promise<string> {
-  const response = await fetch(apiUrl('/speech'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
+  let response: Response
+  try {
+    response = await fetch(apiUrl('/speech'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+  } catch (error) {
+    throw buildNetworkError('/speech', error)
+  }
 
   const payload = (await response.json()) as { status?: string; url?: string; message?: string }
   if (!response.ok || payload.status !== 'ok' || !payload.url) {
@@ -51,11 +91,17 @@ export async function streamChat(
   callbacks: StreamCallbacks,
   options: StreamChatOptions = {}
 ): Promise<void> {
-  const response = await fetch(apiUrl('/chat'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, history, voice_mode: Boolean(options.voiceMode) }),
-  })
+  let response: Response
+  try {
+    response = await fetch(apiUrl('/chat'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, history, voice_mode: Boolean(options.voiceMode) }),
+    })
+  } catch (error) {
+    callbacks.onError({ type: 'error', message: buildNetworkError('/chat', error).message })
+    return
+  }
 
   if (!response.ok) {
     const text = await response.text()

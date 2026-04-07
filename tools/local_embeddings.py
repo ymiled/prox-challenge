@@ -23,7 +23,11 @@ class LocalEmbeddingClient:
 
     @property
     def enabled(self) -> bool:
-        return SentenceTransformer is not None and self.disabled_reason is None
+        return (
+            self.settings.semantic_search_enabled
+            and SentenceTransformer is not None
+            and self.disabled_reason is None
+        )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not self.enabled or not texts:

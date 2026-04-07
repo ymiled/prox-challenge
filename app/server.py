@@ -28,8 +28,9 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup() -> None:
-        with contextlib.suppress(Exception):
-            services.ensure_cache()
+        if not settings.hosted_demo:
+            with contextlib.suppress(Exception):
+                services.ensure_cache()
         try:
             await services.validate_anthropic_models()
         except Exception as exc:
@@ -40,7 +41,8 @@ def create_app() -> FastAPI:
             }
             if settings.strict_startup_validation:
                 raise
-        services.ensure_cache()
+        if not settings.hosted_demo:
+            services.ensure_cache()
 
     # on_event is deperecated, fix: 
 
