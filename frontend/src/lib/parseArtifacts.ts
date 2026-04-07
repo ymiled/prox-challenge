@@ -1,4 +1,5 @@
 import type { Artifact } from './types'
+import { apiUrl } from './api'
 
 interface ParseResult {
   text: string
@@ -30,7 +31,7 @@ export function parseArtifacts(content: string): ParseResult {
       type: mapArtifactType(mimeType),
       title,
       content: artifactContent.trim(),
-      url: `/artifacts/${id}`,
+      url: apiUrl(`/artifacts/${id}`),
     })
   }
 

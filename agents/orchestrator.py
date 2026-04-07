@@ -74,9 +74,13 @@ class OrchestratorAgent(ClaudeAgent):
             return
 
         mode = self._classify(message)
+        follow_up = self._follow_up_profile(message, history, mode)
+        mode["follow_up"] = follow_up
 
         # Always run retrieval first
-        retrieval = await self.retrieval_agent.run(message)
+        retrieval_query = self._query_for_retrieval(message, history, mode, follow_up)
+        retrieval = await self.retrieval_agent.run(retrieval_query)
+        retrieval = self._suppress_low_relevance_retrieval(message, retrieval)
         pages = self._dedupe_pages(retrieval.pages)[:4]
 
         clarity = self._assess_query_clarity(message, mode, retrieval, history)
@@ -108,20 +112,25 @@ class OrchestratorAgent(ClaudeAgent):
         user_prompt = self._build_user_prompt(message, retrieval, mode, vision_result, diagnostic_result, clarity, voice_mode)
 
         max_tokens = 700 if mode["clarification_first"] else 1200
-        async for chunk in self.stream_text(user_prompt, history=llm_history, max_tokens=max_tokens):
-            yield {"type": "text_delta", "content": chunk}
+        explicit_artifact_request = mode.get("requested_artifact_type") in {"html", "markdown", "mermaid", "svg", "code"}
+        if not explicit_artifact_request:
+            async for chunk in self.stream_text(user_prompt, history=llm_history, max_tokens=max_tokens):
+                yield {"type": "text_delta", "content": chunk}
+        elif mode.get("requested_artifact_type") == "html":
+            yield {"type": "text_delta", "content": "Rendered result below."}
 
         if not mode["clarification_first"]:
             surfaced = vision_result.relevant_pages if vision_result else pages[:2]
             surfaced = self._dedupe_pages(surfaced) or pages[:2]
-            for page in surfaced:
-                yield {
-                    "type": "image",
-                    "doc": page.doc,
-                    "page": page.page,
-                    "caption": f"{page.doc} page {page.page}",
-                    "url": f"/pages/{page.doc}/{page.page}",
-                }
+            if not explicit_artifact_request:
+                for page in surfaced:
+                    yield {
+                        "type": "image",
+                        "doc": page.doc,
+                        "page": page.page,
+                        "caption": f"{page.doc} page {page.page}",
+                        "url": f"/pages/{page.doc}/{page.page}",
+                    }
 
             artifact_spec = self._build_artifact_spec(message, retrieval, mode, vision_result, diagnostic_result)
             if artifact_spec:
@@ -132,7 +141,7 @@ class OrchestratorAgent(ClaudeAgent):
         # Done — include citations and debug info
         yield {
             "type": "done",
-            "citations": [page.model_dump() for page in pages],
+            "citations": [] if explicit_artifact_request else [page.model_dump() for page in pages],
             "debug": {
                 "mode": mode,
                 "clarification": clarity,
@@ -160,6 +169,146 @@ class OrchestratorAgent(ClaudeAgent):
             return False
         prior_user_turns = sum(1 for msg in history if msg.role == "user")
         return prior_user_turns <= 1
+
+    def _follow_up_profile(self, message: str, history: list[ChatMessage], mode: dict[str, Any]) -> dict[str, Any]:
+        lowered = message.lower().strip()
+        tokens = lowered.split()
+        previous_user_messages = [
+            msg.content.strip()
+            for msg in history
+            if msg.role == "user" and msg.content.strip()
+        ]
+        previous_user_messages = [msg for msg in previous_user_messages if msg != message.strip()]
+
+        if not previous_user_messages:
+            return {
+                "is_follow_up": False,
+                "anchor_message": None,
+                "score": 0,
+                "reasons": [],
+            }
+
+        referential_phrases = (
+            "it", "that", "this", "those", "these", "same",
+            "again", "above", "previous", "earlier", "last one",
+            "that answer", "that setup", "that question", "that one",
+            "this answer", "this setup", "this question", "the same thing",
+        )
+        format_request = mode.get("requested_artifact_type") in {"html", "markdown", "mermaid", "svg", "code"}
+        transformation_verbs = (
+            "generate", "make", "create", "turn", "convert", "show", "render",
+            "put", "give", "format", "explain", "rewrite",
+        )
+        welding_terms = (
+            "tig", "mig", "stick", "flux", "fcaw", "gmaw", "gtaw", "smaw",
+            "polarity", "socket", "ground clamp", "torch", "wire", "duty cycle",
+            "porosity", "spatter", "welder", "omnipro", "vulcan",
+        )
+
+        score = 0
+        reasons: list[str] = []
+
+        if any(phrase in lowered for phrase in referential_phrases):
+            score += 3
+            reasons.append("referential_language")
+        if format_request:
+            score += 2
+            reasons.append("format_request")
+        if len(tokens) <= 12:
+            score += 1
+            reasons.append("short_message")
+        if any(lowered.startswith(verb) for verb in transformation_verbs):
+            score += 1
+            reasons.append("transformation_verb")
+        if not any(term in lowered for term in welding_terms):
+            score += 2
+            reasons.append("missing_domain_terms")
+
+        recent_assistant_text = ""
+        for msg in reversed(history):
+            if msg.role == "assistant" and msg.content.strip():
+                recent_assistant_text = msg.content.lower()
+                break
+        if recent_assistant_text and any(term in recent_assistant_text for term in welding_terms):
+            score += 1
+            reasons.append("recent_assistant_domain_context")
+
+        return {
+            "is_follow_up": score >= 4,
+            "anchor_message": previous_user_messages[-1],
+            "score": score,
+            "reasons": reasons,
+        }
+
+    def _query_for_retrieval(
+        self,
+        message: str,
+        history: list[ChatMessage],
+        mode: dict[str, Any],
+        follow_up: dict[str, Any],
+    ) -> str:
+        requested_artifact_type = mode.get("requested_artifact_type")
+        if requested_artifact_type not in {"html", "markdown", "mermaid", "svg", "code"} and not follow_up.get("is_follow_up"):
+            return message
+
+        lowered = message.lower().strip()
+        welding_terms = (
+            "tig", "mig", "stick", "flux", "fcaw", "gmaw", "gtaw", "smaw",
+            "polarity", "socket", "ground clamp", "torch", "wire", "duty cycle",
+            "porosity", "spatter", "welder", "omnipro", "vulcan",
+        )
+        has_domain_terms = any(term in lowered for term in welding_terms)
+        short_follow_up = len(lowered.split()) <= 10
+
+        if has_domain_terms and not short_follow_up and not follow_up.get("is_follow_up"):
+            return message
+
+        anchor = follow_up.get("anchor_message")
+        if not anchor:
+            return message
+
+        return f"{anchor}\n\nRequested output format: {message}"
+
+    def _suppress_low_relevance_retrieval(self, message: str, retrieval: RetrievalResult) -> RetrievalResult:
+        lowered = message.lower().strip()
+        # Use the max score across all pages rather than pages[0].score — pages may
+        # be reranked by topic (e.g. process-selection) so the first page's score
+        # is not necessarily the best relevance signal.
+        top_score = max((p.score for p in retrieval.pages if p.score is not None), default=None)
+        casual_messages = {
+            "how are you",
+            "hows it going",
+            "how's it going",
+            "who are you",
+            "what can you do",
+            "thanks",
+            "thank you",
+            "ok",
+            "okay",
+            "cool",
+            "nice",
+            "great",
+            "awesome",
+            "lol",
+        }
+        casual_prefixes = (
+            "how are you",
+            "who are you",
+            "what can you do",
+            "tell me about yourself",
+        )
+        is_casual = lowered in casual_messages or any(lowered.startswith(prefix) for prefix in casual_prefixes)
+        weak_retrieval = top_score is None or top_score < 0.12
+
+        if not (is_casual or weak_retrieval):
+            return retrieval
+
+        return retrieval.model_copy(update={
+            "answerable": False,
+            "pages": [],
+            "excerpts": [],
+            "structured_hits": {},
+        })
 
     # ─── Ambiguity / clarification ───────────────────────────────────────────────
 
@@ -226,11 +375,28 @@ class OrchestratorAgent(ClaudeAgent):
             reasons.append("short_vague_query")
 
         if mode["query_type"] == "duty_cycle":
-            has_process = any(p in lowered for p in ["mig", "tig", "stick", "flux", "fcaw", "gmaw", "gtaw", "smaw"])
-            has_voltage = "120" in lowered or "240" in lowered
-            has_amp = bool(re.search(r"\b\d{2,3}\b", t)) and ("amp" in lowered or re.search(r"\b\d{2,3}\s*a\b", lowered))
-            if not (has_process and has_voltage and has_amp):
-                reasons.append("duty_missing_process_voltage_or_amps")
+            # Conceptual questions ("what happens if I exceed…") and explicit
+            # artifact requests ("make a calculator") don't need specific values.
+            is_conceptual_dc = any(
+                phrase in lowered
+                for phrase in [
+                    "what happens", "what is", "explain", "define", "exceed",
+                    "too often", "consequence", "damage", "why", "how long",
+                    "what does it mean", "calculator", "if i go over", "if i exceed",
+                ]
+            )
+            has_artifact_planned = bool(mode.get("artifact_type"))
+            if not is_conceptual_dc and not has_artifact_planned:
+                has_process = any(p in lowered for p in ["mig", "tig", "stick", "flux", "fcaw", "gmaw", "gtaw", "smaw"])
+                has_voltage = "120" in lowered or "240" in lowered
+                # Fix: "200A" has no \b between digit and letter, so detect directly
+                has_amp = (
+                    bool(re.search(r"\b\d{2,3}\s*[aA]\b", t))   # "200A", "200 A"
+                    or bool(re.search(r"\bat\s+\d{2,3}\b", lowered))  # "at 200"
+                    or "amp" in lowered
+                )
+                if not (has_process and has_voltage and has_amp):
+                    reasons.append("duty_missing_process_voltage_or_amps")
 
         if mode["query_type"] == "settings":
             has_process = any(p in lowered for p in ["mig", "tig", "stick", "flux", "fcaw"])
@@ -373,9 +539,12 @@ class OrchestratorAgent(ClaudeAgent):
         is_process_selector = any(
             k in lowered
             for k in [
-                "which process", "what process", "mig or tig", "tig or mig",
+                "which process", "what process",
+                "which welding process", "what welding process",
+                "mig or tig", "tig or mig",
                 "choose a process", "selection chart", "pick a process", "what mode should",
                 "flux or mig", "stick or", "which welding mode",
+                "best process", "what should i use", "which should i use",
             ]
         )
         is_maintenance = any(
@@ -424,6 +593,8 @@ class OrchestratorAgent(ClaudeAgent):
             phrase in lowered
             for phrase in ["show me", "diagram", "schematic", "visual", "draw"]
         )
+        if wiring_svg:
+            wants_visual_artifact = True
 
         artifact_type: str | None = None
         artifact_style: str | None = None
@@ -541,7 +712,7 @@ class OrchestratorAgent(ClaudeAgent):
             return "markdown"
         if "single-file html" in lowered or "single file html" in lowered or "one-file html" in lowered or "one file html" in lowered:
             return "html"
-        if re.search(r"\bhtml\b", lowered) and any(term in lowered for term in ["page", "checklist", "dashboard", "tool", "site", "website"]):
+        if "html" in lowered:
             return "html"
         if any(
             term in lowered

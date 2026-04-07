@@ -1,4 +1,5 @@
 import type {
+  ArtifactEvent,
   DoneEvent,
   ErrorEvent,
   ImageEvent,
@@ -9,6 +10,7 @@ import type {
 export interface StreamCallbacks {
   onTextDelta: (event: TextDeltaEvent) => void
   onImage: (event: ImageEvent) => void
+  onArtifact: (event: ArtifactEvent) => void
   onDone: (event: DoneEvent) => void
   onError: (event: ErrorEvent) => void
 }
@@ -21,7 +23,7 @@ export interface StreamChatOptions {
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 const isBrowser = typeof window !== 'undefined'
 
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   return API_BASE ? `${API_BASE}${path}` : path
 }
 
@@ -151,6 +153,7 @@ export async function streamChat(
 
       if (event.type === 'text_delta') callbacks.onTextDelta(event)
       else if (event.type === 'image') callbacks.onImage(event)
+      else if (event.type === 'artifact') callbacks.onArtifact(event)
       else if (event.type === 'done') callbacks.onDone(event)
       else if (event.type === 'error') callbacks.onError(event)
     }

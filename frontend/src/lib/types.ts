@@ -54,11 +54,12 @@ export interface ImageEvent {
 
 export interface ArtifactEvent {
   type: 'artifact'
-  id: string
-  artifact_type: 'react' | 'svg' | 'json' | 'html' | 'code' | 'markdown' | 'mermaid'
-  title: string
-  content: string
-  url: string
+  artifact: {
+    artifact_id: string
+    artifact_type: 'react' | 'svg' | 'json' | 'html' | 'code' | 'markdown' | 'mermaid'
+    title: string
+    content: string
+  }
 }
 
 export interface DoneEvent {

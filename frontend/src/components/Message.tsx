@@ -1,5 +1,6 @@
 import ArtifactRenderer from './ArtifactRenderer'
 import type { Artifact, ManualImage, Message as MessageType, PageRef } from '../lib/types'
+import { apiUrl } from '../lib/api'
 
 interface Props {
   message: MessageType
@@ -53,7 +54,7 @@ function CitationPills({ citations }: { citations: PageRef[] }) {
       {unique.slice(0, 5).map((c) => (
         <a
           key={`${c.doc}-${c.page}`}
-          href={`/pages/${c.doc}/${c.page}`}
+          href={apiUrl(`/pages/${c.doc}/${c.page}`)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-slate-400 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded-full transition-colors"
@@ -107,14 +108,6 @@ function InlineArtifactPreviews({ artifacts }: { artifacts: Artifact[] }) {
               </span>
             </div>
             <div className="flex items-center gap-3 flex-shrink-0">
-              <a
-                href={artifact.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-medium text-slate-500 hover:text-orange-600 transition-colors"
-              >
-                Open
-              </a>
               <a
                 href={artifact.url}
                 download={artifactFilename(artifact)}

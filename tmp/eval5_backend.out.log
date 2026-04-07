@@ -1,0 +1,12 @@
+warning: `VIRTUAL_ENV=C:\Users\Youssef\AppData\Local\Programs\Python\Python313` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+INFO:     Started server process [11896]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:49945 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49950 - "POST /chat HTTP/1.1" 200 OK
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|##########| 199/199 [00:00<00:00, 2809.27it/s]
+INFO:     127.0.0.1:49966 - "POST /chat HTTP/1.1" 200 OK
+Fatal error in message reader: Command failed with exit code 1 (exit code: 1)
+Error output: Check stderr output for details
+INFO:     127.0.0.1:56696 - "GET /health HTTP/1.1" 200 OK

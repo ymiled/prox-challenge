@@ -78,6 +78,10 @@ function buildMarkdownSrcdoc(markdown: string): string {
 </html>`
 }
 
+function buildSvgDataUrl(svg: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+}
+
 export default function ArtifactRenderer({ artifact, variant = 'panel' }: Props) {
   const iframeHeight = variant === 'inline' ? '380px' : '480px'
   const svgMinH = variant === 'inline' ? 'min-h-[240px]' : 'min-h-[320px]'
@@ -97,7 +101,12 @@ export default function ArtifactRenderer({ artifact, variant = 'panel' }: Props)
   if (artifact.type === 'svg') {
     return (
       <div className={`p-4 flex items-center justify-center bg-white ${svgMinH}`}>
-        <div className="max-w-full overflow-auto" dangerouslySetInnerHTML={{ __html: artifact.content }} />
+        <img
+          src={buildSvgDataUrl(artifact.content)}
+          alt={artifact.title}
+          className="block max-w-full h-auto"
+          style={{ maxHeight: variant === 'inline' ? '320px' : '420px' }}
+        />
       </div>
     )
   }

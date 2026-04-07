@@ -231,8 +231,19 @@ class ManualSearchEngine:
         for key, payload in self.structured_cache.items():
             if allowed_keys and key not in allowed_keys:
                 continue
+            entries = payload.get("entries", [])[:200]
+            # For structured tables that are fully relevant when the query profile matches,
+            # return all entries directly (no keyword filter needed — profile already confirms relevance).
+            if key == "duty_cycles" and query_profile.get("duty_cycle"):
+                if entries:
+                    hits[key] = entries[:24]
+                continue
+            if key == "wire_settings" and (query_profile.get("settings") or query_profile.get("process_selection")):
+                if entries:
+                    hits[key] = entries[:24]
+                continue
             matches = []
-            for entry in payload.get("entries", [])[:200]:
+            for entry in entries:
                 text = self._structured_entry_text(entry).lower()
                 if self._structured_entry_matches(key, entry, text, lowered):
                     matches.append(entry)
@@ -269,6 +280,18 @@ class ManualSearchEngine:
             )
             return boosted[: min(limit, 3)]
         if query_profile["process_selection"]:
+            # Guarantee selection-chart entries are always in the pool for
+            # process-selection queries. The chart is primarily visual so BM25
+            # and semantic scores can be zero even when it's the best answer.
+            existing_keys = {self._page_key(item["entry"]) for item in candidates}
+            for entry in self.search_index:
+                if entry.get("doc") == "selection-chart":
+                    key = self._page_key(entry)
+                    if key not in existing_keys:
+                        candidates = candidates + [
+                            {"entry": entry, "score": 0.05, "sparse_score": 0.0, "semantic_score": 0.05}
+                        ]
+                        existing_keys.add(key)
             boosted = sorted(
                 candidates,
                 key=lambda item: self._process_selection_rank(item["entry"]),

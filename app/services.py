@@ -136,8 +136,13 @@ class AppServices:
                         "title": artifact.title,
                         "content": artifact.content,
                     }
-                    yield self._event("text_delta", {
-                        "content": "\n\n" + self._artifact_block(artifact),
+                    yield self._event("artifact", {
+                        "artifact": {
+                            "artifact_id": artifact.artifact_id,
+                            "artifact_type": artifact.artifact_type,
+                            "title": artifact.title,
+                            "content": artifact.content,
+                        }
                     })
 
                 elif event_type == "done":

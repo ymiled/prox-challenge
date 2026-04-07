@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Message from './components/Message'
-import { fetchHealth, streamChat, synthesizeSpeech } from './lib/api'
+import { apiUrl, fetchHealth, streamChat, synthesizeSpeech } from './lib/api'
 import { appendStreamText, repairConcatenatedWords } from './lib/joinStreamText'
 import { parseArtifacts } from './lib/parseArtifacts'
-import type { Artifact, Message as MessageType, PageRef } from './lib/types'
+import type { Artifact, ArtifactEvent, Message as MessageType, PageRef } from './lib/types'
 
 declare global {
   interface Window {
@@ -76,6 +76,54 @@ function normalizeVoiceCommand(text: string): string {
   return text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+function getFriendlyVoiceError(error: string): { message: string; status: string; showError: boolean } {
+  switch (error) {
+    case 'no-speech':
+      return {
+        message: '',
+        status: 'Nothing heard — tap mic to try again',
+        showError: false,
+      }
+    case 'audio-capture':
+      return {
+        message: 'I could not access your microphone. Check that a microphone is connected and available.',
+        status: 'Microphone unavailable',
+        showError: true,
+      }
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return {
+        message: 'Microphone access is blocked. Please allow microphone permission in your browser and try again.',
+        status: 'Microphone permission needed',
+        showError: true,
+      }
+    case 'network':
+      return {
+        message: 'Voice recognition lost its connection. Please try again in a moment.',
+        status: 'Voice connection lost',
+        showError: true,
+      }
+    case 'language-not-supported':
+      return {
+        message: 'This browser does not support voice recognition for the current language setting.',
+        status: 'Voice language unsupported',
+        showError: true,
+      }
+    case 'aborted':
+      return {
+        message: 'Voice capture was cancelled.',
+        status: 'Voice capture cancelled',
+        showError: false,
+      }
+    default:
+      return {
+        message: 'Voice input ran into a problem. Please try again.',
+        status: 'Voice input unavailable',
+        showError: true,
+      }
+  }
+}
+
 function cleanSpokenText(text: string): string {
   return text
     .replace(/•/g, ' ')
@@ -131,13 +179,15 @@ export default function App() {
   const [input, setInput] = useState('')
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
   const [serverHasAnthropicKey, setServerHasAnthropicKey] = useState(false)
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
+  const [apiKeyGateError, setApiKeyGateError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [voiceMode, setVoiceMode] = useState(true)
   const [autoSpeak, setAutoSpeak] = useState(true)
   const [isListening, setIsListening] = useState(false)
+  const [voiceMissed, setVoiceMissed] = useState(false)
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null)
-  const [voiceStatus, setVoiceStatus] = useState('Hold the mic button to talk')
+  const [voiceStatus, setVoiceStatus] = useState('Tap the mic button to talk')
   const [localTtsReady, setLocalTtsReady] = useState(false)
   const [localTtsEnabled, setLocalTtsEnabled] = useState(false)
   const [pendingAutoSpeakMessage, setPendingAutoSpeakMessage] = useState<MessageType | null>(null)
@@ -145,7 +195,6 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const holdToTalkRef = useRef(false)
   const transcriptRef = useRef('')
   const pendingAutoSendRef = useRef(false)
   const englishVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
@@ -158,11 +207,15 @@ export default function App() {
   const voiceEngineLabel = localTtsEnabled && localTtsReady ? 'Using local voice' : browserSpeechSupported ? 'Using browser voice' : 'Voice unavailable'
   const effectiveAnthropicKey = anthropicApiKey.trim()
   const requiresUserKey = !serverHasAnthropicKey
+  const showApiKeyGate = requiresUserKey && !effectiveAnthropicKey
 
   useEffect(() => {
     if (typeof window === 'undefined') return
     const savedKey = window.sessionStorage.getItem('prox_anthropic_api_key')
-    if (savedKey) setAnthropicApiKey(savedKey)
+    if (savedKey) {
+      setAnthropicApiKey(savedKey)
+      setApiKeyDraft(savedKey)
+    }
   }, [])
 
   useEffect(() => {
@@ -196,6 +249,18 @@ export default function App() {
       audioRef.current?.pause()
     }
   }, [])
+
+  // Auto-reset transient voice status messages back to idle after a short delay
+  useEffect(() => {
+    const transientStatuses = [
+      'Nothing heard — tap mic to try again',
+      'Voice capture cancelled',
+      'Question sent',
+    ]
+    if (!transientStatuses.includes(voiceStatus)) return
+    const id = setTimeout(() => setVoiceStatus('Tap the mic button to talk'), 3500)
+    return () => clearTimeout(id)
+  }, [voiceStatus])
 
   useEffect(() => {
     if (!browserSpeechSupported) return
@@ -245,6 +310,27 @@ export default function App() {
       window.removeEventListener('keydown', handleActivation)
     }
   }, [browserSpeechSupported, primeBrowserSpeech])
+
+  const resetApiKeyGate = useCallback((message: string) => {
+    setAnthropicApiKey('')
+    setApiKeyDraft('')
+    setApiKeyGateError(message)
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem('prox_anthropic_api_key')
+    }
+  }, [])
+
+  const isApiKeyError = useCallback((message: string): boolean => {
+    const lowered = message.toLowerCase()
+    return (
+      lowered.includes('api key') ||
+      lowered.includes('x-api-key') ||
+      lowered.includes('authentication') ||
+      lowered.includes('unauthorized') ||
+      lowered.includes('invalid api') ||
+      lowered.includes('invalid x-api-key')
+    )
+  }, [])
 
   const stopSpeaking = useCallback(() => {
     audioRef.current?.pause()
@@ -361,7 +447,7 @@ export default function App() {
       setVoiceError('No cited manual page is available yet.')
       return
     }
-    window.open(`/pages/${page.doc}/${page.page}`, '_blank', 'noopener,noreferrer')
+    window.open(apiUrl(`/pages/${page.doc}/${page.page}`), '_blank', 'noopener,noreferrer')
     setVoiceStatus(`Opening ${page.doc} page ${page.page}`)
   }, [latestAssistantMessage])
 
@@ -432,7 +518,7 @@ export default function App() {
       const trimmed = text.trim()
       if (!trimmed || isLoading) return
       if (requiresUserKey && !effectiveAnthropicKey) {
-        setVoiceError('Enter your Anthropic API key first. It is stored only in this browser tab for the current session.')
+        setApiKeyGateError('Enter your Anthropic API key to continue.')
         return
       }
 
@@ -440,7 +526,7 @@ export default function App() {
       setIsLoading(true)
       setVoiceError(null)
       primeBrowserSpeech()
-      setVoiceStatus(voiceMode ? 'Listening request sent. Waiting for answer...' : 'Question sent')
+      setVoiceStatus('Question sent')
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
       const userMsg: MessageType = {
@@ -496,7 +582,7 @@ export default function App() {
                 doc: event.doc,
                 page: event.page,
                 caption: event.caption,
-                url: event.url,
+                url: apiUrl(event.url),
                 src: event.src,
               }
               setMessages((prev) =>
@@ -505,6 +591,17 @@ export default function App() {
                   if (m.images.some((i) => i.doc === image.doc && i.page === image.page)) return m
                   return { ...m, images: [...m.images, image] }
                 })
+              )
+            },
+            onArtifact: (event) => {
+              const artifact = artifactFromEvent(event)
+              streamingArtifactsRef.current = mergeAgentArtifact(streamingArtifactsRef.current, artifact)
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, artifacts: mergeAgentArtifact(m.artifacts, artifact) }
+                    : m
+                )
               )
             },
             onDone: (event) => {
@@ -552,10 +649,13 @@ export default function App() {
                 prev.map((m) => (m.id === assistantId ? { ...m, isStreaming: false, error: event.message } : m))
               )
               setIsLoading(false)
+              if (isApiKeyError(event.message)) {
+                resetApiKeyGate('Enter a valid Anthropic API key.')
+              }
               setVoiceError(event.message)
             },
           },
-          { voiceMode, anthropicApiKey: effectiveAnthropicKey }
+          { voiceMode: true, anthropicApiKey: effectiveAnthropicKey }
         )
       } catch (err) {
         streamingTextRef.current = ''
@@ -568,10 +668,13 @@ export default function App() {
           )
         )
         setIsLoading(false)
+        if (err instanceof Error && isApiKeyError(err.message)) {
+          resetApiKeyGate('Enter a valid Anthropic API key.')
+        }
         setVoiceError(err instanceof Error ? err.message : 'Connection failed')
       }
     },
-    [autoSpeak, effectiveAnthropicKey, isLoading, messages, primeBrowserSpeech, requiresUserKey, voiceMode]
+    [autoSpeak, effectiveAnthropicKey, isApiKeyError, isLoading, messages, primeBrowserSpeech, requiresUserKey, resetApiKeyGate]
   )
 
   const stopListening = useCallback(() => {
@@ -631,9 +734,16 @@ export default function App() {
         }
       }
       recognition.onerror = (event) => {
-        if (event.error !== 'aborted') {
-          setVoiceError(`Voice input error: ${event.error}`)
-          setVoiceStatus('Voice input error')
+        const friendly = getFriendlyVoiceError(event.error)
+        if (friendly.showError) {
+          setVoiceError(friendly.message)
+        } else {
+          setVoiceError(null)
+        }
+        setVoiceStatus(friendly.status)
+        if (event.error === 'no-speech') {
+          setVoiceMissed(true)
+          setTimeout(() => setVoiceMissed(false), 1500)
         }
       }
       recognition.onend = () => {
@@ -653,24 +763,21 @@ export default function App() {
     }
   }, [finishVoiceCapture, isLoading, primeBrowserSpeech, recognitionSupported, stopSpeaking])
 
-  const beginHoldToTalk = useCallback(() => {
+  const beginVoiceCapture = useCallback(() => {
     if (!recognitionSupported || isLoading) return
-    holdToTalkRef.current = true
     transcriptRef.current = ''
     pendingAutoSendRef.current = false
     startListening()
   }, [isLoading, recognitionSupported, startListening])
 
-  const endHoldToTalk = useCallback(() => {
-    if (!holdToTalkRef.current) return
-    holdToTalkRef.current = false
+  const endVoiceCapture = useCallback(() => {
+    if (!isListening) return
     pendingAutoSendRef.current = true
     stopListening()
     setVoiceStatus('Processing your voice...')
-  }, [stopListening])
+  }, [isListening, stopListening])
 
   const cancelHoldToTalk = useCallback(() => {
-    holdToTalkRef.current = false
     pendingAutoSendRef.current = false
     transcriptRef.current = ''
     stopListening()
@@ -693,18 +800,68 @@ export default function App() {
 
   const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const nextValue = e.target.value
+    setApiKeyDraft(nextValue)
+    if (apiKeyGateError) setApiKeyGateError(null)
+  }
+
+  const handleApiKeySave = () => {
+    const nextValue = apiKeyDraft.trim()
+    if (!nextValue) {
+      setApiKeyGateError('Enter your Anthropic API key to continue.')
+      return
+    }
     setAnthropicApiKey(nextValue)
+    setApiKeyDraft('')
+    setApiKeyGateError(null)
+    setVoiceError(null)
     if (typeof window !== 'undefined') {
-      if (nextValue.trim()) window.sessionStorage.setItem('prox_anthropic_api_key', nextValue)
-      else window.sessionStorage.removeItem('prox_anthropic_api_key')
+      window.sessionStorage.setItem('prox_anthropic_api_key', nextValue)
+    }
+  }
+
+  const handleApiKeyKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleApiKeySave()
     }
   }
 
   const hasMessages = messages.length > 0
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
-      <header className="flex-shrink-0 bg-slate-900 text-white px-6 py-3 flex items-center justify-between gap-4 shadow-lg z-10">
+    <div className="relative flex flex-col h-screen bg-slate-50 overflow-hidden">
+      {showApiKeyGate && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/30 backdrop-blur-md px-4">
+          <div className="w-full max-w-md rounded-3xl border border-white/60 bg-white/90 shadow-2xl p-6 text-center">
+            <div className="w-14 h-14 bg-orange-100 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl font-semibold text-orange-600">
+              P
+            </div>
+            <h2 className="text-xl font-semibold text-slate-900 mb-2">Enter your Anthropic API key</h2>
+            <p className="text-sm text-slate-500 mb-4">
+              Your key is hidden in the UI and stored only in this browser tab for the current session.
+            </p>
+            <input
+              type="password"
+              value={apiKeyDraft}
+              onChange={handleApiKeyChange}
+              onKeyDown={handleApiKeyKeyDown}
+              placeholder="sk-ant-..."
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none"
+            />
+            {apiKeyGateError && <p className="mt-3 text-sm text-red-600">{apiKeyGateError}</p>}
+            <button
+              type="button"
+              onClick={handleApiKeySave}
+              className="mt-4 w-full rounded-xl bg-orange-500 hover:bg-orange-600 text-white px-4 py-3 text-sm font-semibold transition-colors shadow-sm"
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
+      <header className={`flex-shrink-0 bg-slate-900 text-white px-6 py-3 flex items-center justify-between gap-4 shadow-lg z-10 transition-all ${showApiKeyGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center font-bold text-sm shadow-inner">
             P
@@ -715,15 +872,6 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs">
-          <button
-            type="button"
-            onClick={() => setVoiceMode((value) => !value)}
-            className={`rounded-full px-3 py-1.5 border transition-colors ${
-              voiceMode ? 'bg-orange-500 border-orange-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-300'
-            }`}
-          >
-            Voice mode {voiceMode ? 'on' : 'off'}
-          </button>
           <button
             type="button"
             onClick={() => {
@@ -741,7 +889,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className={`flex flex-1 overflow-hidden transition-all ${showApiKeyGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
         <div className="flex flex-col w-full min-w-0">
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 chat-scroll">
             {!hasMessages && (
@@ -751,25 +899,8 @@ export default function App() {
                 </div>
                 <h2 className="text-lg font-semibold text-slate-700 mb-1">Vulcan OmniPro 220 Assistant</h2>
                 <p className="text-sm text-slate-400 max-w-sm mb-8">
-                  Hold the mic to talk. Prox can read answers aloud and respond to simple voice commands.
+                  Tap the mic to start talking, then tap again to send. Prox can read answers aloud and respond to simple voice commands.
                 </p>
-                {requiresUserKey && (
-                  <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-left shadow-sm mb-6">
-                    <p className="text-sm font-semibold text-amber-900 mb-1">Bring your own Anthropic key</p>
-                    <p className="text-xs text-amber-800 mb-3">
-                      Enter your key to use the assistant. It is masked in the UI and stored only in this browser tab for the current session.
-                    </p>
-                    <input
-                      type="password"
-                      value={anthropicApiKey}
-                      onChange={handleApiKeyChange}
-                      placeholder="sk-ant-..."
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none"
-                    />
-                  </div>
-                )}
                 <div className="grid grid-cols-1 gap-2 w-full max-w-md">
                   {SUGGESTED_QUESTIONS.map((q) => (
                     <button
@@ -804,26 +935,6 @@ export default function App() {
               }}
               className="space-y-2"
             >
-              {requiresUserKey && (
-                <div className="space-y-1">
-                  <label htmlFor="anthropic-api-key" className="block text-xs font-medium text-slate-500 pl-1">
-                    Anthropic API key
-                  </label>
-                  <input
-                    id="anthropic-api-key"
-                    type="password"
-                    value={anthropicApiKey}
-                    onChange={handleApiKeyChange}
-                    placeholder="sk-ant-..."
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="w-full rounded-xl border border-slate-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 transition-colors"
-                  />
-                  <p className="text-[11px] text-slate-400 pl-1">
-                    Stored only in this browser tab for the current session.
-                  </p>
-                </div>
-              )}
               <div className="flex items-end gap-2">
                 <textarea
                   ref={textareaRef}
@@ -838,29 +949,22 @@ export default function App() {
                 />
                 <button
                   type="button"
-                  onMouseDown={beginHoldToTalk}
-                  onMouseUp={endHoldToTalk}
-                  onMouseLeave={() => {
-                    if (isListening) endHoldToTalk()
-                  }}
-                  onTouchStart={(e) => {
-                    e.preventDefault()
-                    beginHoldToTalk()
-                  }}
-                  onTouchEnd={(e) => {
-                    e.preventDefault()
-                    endHoldToTalk()
+                  onClick={() => {
+                    if (isListening) endVoiceCapture()
+                    else beginVoiceCapture()
                   }}
                   onContextMenu={(e) => e.preventDefault()}
                   disabled={!recognitionSupported || isLoading || (requiresUserKey && !effectiveAnthropicKey)}
                   className={`flex-shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors shadow-sm border ${
                     isListening
                       ? 'bg-red-50 text-red-700 border-red-200'
+                      : voiceMissed
+                      ? 'bg-amber-50 text-amber-700 border-amber-300'
                       : 'bg-white text-slate-700 border-slate-300 hover:border-orange-300 hover:text-orange-600'
                   } disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200`}
                   style={{ height: '44px' }}
                 >
-                  {isListening ? 'Release to send' : 'Hold to talk'}
+                  {isListening ? 'Tap to send' : voiceMissed ? 'Try again' : 'Tap to talk'}
                 </button>
                 <button
                   type="submit"
@@ -921,6 +1025,39 @@ function dedupeArtifacts(artifacts: Artifact[]): Artifact[] {
   const seen = new Map<string, Artifact>()
   for (const artifact of artifacts) seen.set(artifact.id, artifact)
   return Array.from(seen.values())
+}
+
+const ARTIFACT_TYPE_TO_MIME: Record<Artifact['type'], string> = {
+  react: 'application/vnd.ant.react',
+  svg: 'image/svg+xml',
+  html: 'text/html',
+  code: 'application/vnd.ant.code',
+  markdown: 'text/markdown',
+  mermaid: 'application/vnd.ant.mermaid',
+  json: 'application/json',
+}
+
+function artifactFromEvent(event: ArtifactEvent): Artifact {
+  const { artifact_id, artifact_type, title, content } = event.artifact
+  return {
+    id: artifact_id,
+    type: artifact_type,
+    mimeType: ARTIFACT_TYPE_TO_MIME[artifact_type] ?? 'application/json',
+    title,
+    content,
+    url: apiUrl(`/artifacts/${artifact_id}`),
+  }
+}
+
+/**
+ * Merge an agent-generated artifact into the list. If an inline artifact with
+ * the same title already exists (parsed from <antArtifact> in text), replace it
+ * so the agent version (purpose-built by the artifact agent) wins.
+ */
+function mergeAgentArtifact(existing: Artifact[], incoming: Artifact): Artifact[] {
+  const replaced = existing.map((a) => (a.title === incoming.title ? incoming : a))
+  if (replaced.some((a) => a.id === incoming.id || a.title === incoming.title)) return replaced
+  return [...existing, incoming]
 }
 
 function dedupeCitations(citations: PageRef[]): PageRef[] {
