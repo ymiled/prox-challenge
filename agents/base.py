@@ -25,13 +25,6 @@ class ClaudeAgent:
         self.model = model
         self.system_prompt = system_prompt
         self.client = AsyncAnthropic(api_key=settings.api_key) if settings.anthropic_enabled else None
-        self.sdk_ready = (
-            settings.anthropic_enabled
-            and query is not None
-            and ClaudeAgentOptions is not None
-            and SDKAssistantMessage is not None
-            and SDKTextBlock is not None
-        )
 
     @property
     def enabled(self) -> bool:
@@ -54,15 +47,6 @@ class ClaudeAgent:
         if not self.enabled:
             yield "[Anthropic API not configured - set ANTHROPIC_API_KEY in .env]"
             return
-
-        if isinstance(user_content, str) and self.sdk_ready:
-            try:
-                prompt = self._sdk_prompt(user_content, history)
-                async for text in self._sdk_stream(prompt, max_tokens=max_tokens):
-                    yield text
-                return
-            except Exception:
-                pass
 
         async for text in self._anthropic_stream_text(user_content, history, max_tokens):
             yield text
@@ -91,12 +75,6 @@ class ClaudeAgent:
     ) -> str | None:
         if not self.enabled:
             return None
-
-        if isinstance(user_content, str) and self.sdk_ready:
-            try:
-                return await self._sdk_complete_text(user_content, max_tokens=max_tokens)
-            except Exception:
-                pass
 
         return await self._anthropic_complete_text(user_content, max_tokens=max_tokens)
 

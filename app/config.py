@@ -75,6 +75,7 @@ class Settings:
         # Response caching
         self.response_cache_enabled = os.getenv("ENABLE_RESPONSE_CACHE", "true").strip().lower() == "true"
         self.response_cache_max_size = int(os.getenv("RESPONSE_CACHE_MAX_SIZE", "200"))
+        self.claude_sdk_enabled = os.getenv("ENABLE_CLAUDE_AGENT_SDK", "false").strip().lower() == "true"
 
     @property
     def cache_ready_file(self) -> Path:
