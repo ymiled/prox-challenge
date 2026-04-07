@@ -43,7 +43,7 @@ function buildNetworkError(path: string, error: unknown): Error {
   if (protocolMismatch) {
     details.push('The site is loaded over HTTPS but the API base uses HTTP, which browsers block as mixed content.')
   } else {
-    details.push('Common causes: wrong VITE_API_BASE_URL, CORS not allowing the Vercel domain, backend sleeping or down on Render, or an invalid SSL certificate.')
+    details.push('Common causes: wrong VITE_API_BASE_URL, CORS not allowing the frontend origin, backend unavailable, or an invalid SSL certificate.')
   }
 
   if (error instanceof Error && error.message) {
@@ -53,7 +53,7 @@ function buildNetworkError(path: string, error: unknown): Error {
   return new Error(details.join(' '))
 }
 
-export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_tts_enabled?: boolean; hosted_demo?: boolean }> {
+export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_tts_enabled?: boolean; deployment_env?: string }> {
   let response: Response
   try {
     response = await fetch(apiUrl('/health'))
@@ -63,7 +63,7 @@ export async function fetchHealth(): Promise<{ local_tts_ready?: boolean; local_
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
-  return (await response.json()) as { local_tts_ready?: boolean; local_tts_enabled?: boolean; hosted_demo?: boolean }
+  return (await response.json()) as { local_tts_ready?: boolean; local_tts_enabled?: boolean; deployment_env?: string }
 }
 
 export async function synthesizeSpeech(text: string): Promise<string> {

@@ -44,19 +44,20 @@ class Settings:
             if origin.strip()
         ]
         self.strict_startup_validation = os.getenv("STRICT_STARTUP_VALIDATION", "false").strip().lower() == "true"
-        self.hosted_demo = os.getenv("PROX_HOSTED_DEMO", "false").strip().lower() == "true"
+        self.deployment_env = os.getenv("DEPLOYMENT_ENV", "local").strip().lower() or "local"
+        self.deployed = self.deployment_env != "local"
         self.local_tts_enabled = os.getenv(
             "ENABLE_LOCAL_TTS",
-            "false" if self.hosted_demo else "true",
+            "false" if self.deployed else "true",
         ).strip().lower() == "true"
         self.semantic_search_enabled = os.getenv(
             "ENABLE_SEMANTIC_SEARCH",
-            "false" if self.hosted_demo else "true",
+            "false" if self.deployed else "true",
         ).strip().lower() == "true"
         self.render_dpi = int(
             os.getenv(
                 "PAGE_RENDER_DPI",
-                "120" if self.hosted_demo else "180",
+                "120" if self.deployed else "180",
             ).strip()
         )
         # Hybrid RAG: dense (embeddings) vs sparse (BM25 over page index)

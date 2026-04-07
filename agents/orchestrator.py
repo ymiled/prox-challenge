@@ -55,6 +55,24 @@ class OrchestratorAgent(ClaudeAgent):
         Async generator that yields SSE-style event dicts.
         Events: text_delta, image, artifact, done
         """
+        if self._is_simple_greeting(message, history):
+            greeting = (
+                "Hi! I can help with setup, polarity, settings, duty cycle, and troubleshooting for the Vulcan OmniPro 220."
+            )
+            yield {"type": "text_delta", "content": greeting}
+            yield {
+                "type": "done",
+                "citations": [],
+                "debug": {
+                    "mode": {"query_type": "greeting", "fast_path": True},
+                    "voice_mode": voice_mode,
+                    "retrieval_pages": 0,
+                    "vision": None,
+                    "diagnostic": None,
+                },
+            }
+            return
+
         mode = self._classify(message)
 
         # Always run retrieval first
@@ -124,6 +142,24 @@ class OrchestratorAgent(ClaudeAgent):
                 "diagnostic": diagnostic_result.model_dump() if diagnostic_result else None,
             },
         }
+
+    def _is_simple_greeting(self, message: str, history: list[ChatMessage]) -> bool:
+        normalized = re.sub(r"[^\w\s]", "", message.lower()).strip()
+        if not normalized:
+            return False
+        greetings = {
+            "hi",
+            "hello",
+            "hey",
+            "yo",
+            "good morning",
+            "good afternoon",
+            "good evening",
+        }
+        if normalized not in greetings:
+            return False
+        prior_user_turns = sum(1 for msg in history if msg.role == "user")
+        return prior_user_turns <= 1
 
     # ─── Ambiguity / clarification ───────────────────────────────────────────────
 

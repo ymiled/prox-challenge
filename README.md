@@ -28,7 +28,6 @@ Depending on the question, the app can:
 - generate artifacts when a diagram or richer explanation is more useful than plain text
 - read the answer aloud
 
-
 ## How The Agent Works
 
 At a high level:
@@ -39,7 +38,7 @@ At a high level:
 4. Vision is used when the question depends on diagrams, polarity layouts, weld visuals, or page-level imagery.
 5. Diagnostic reasoning is used when the question looks like troubleshooting.
 6. Artifact generation is used when a visual or interactive answer would help more than text alone.
-7. The frontend streams the answer live, renders images/artifacts, and optionally reads the final answer aloud.
+7. The frontend streams the answer live, renders images and artifacts, and optionally reads the final answer aloud.
 
 ## Retrieval Strategy
 
@@ -67,7 +66,7 @@ The frontend supports:
 Speech output behavior:
 
 - Local development can use backend-generated local TTS when available.
-- Hosted deployments are configured to use browser speech synthesis instead, which is more reliable on free Linux hosts.
+- Hosted deployments should generally use browser speech synthesis instead of local Linux TTS.
 
 ## Local Setup
 
@@ -112,7 +111,6 @@ Optional local settings:
 ```bash
 FRONTEND_ORIGIN=http://localhost:5173
 STRICT_STARTUP_VALIDATION=false
-PROX_HOSTED_DEMO=false
 ENABLE_LOCAL_TTS=true
 ```
 
@@ -135,32 +133,43 @@ Then open:
 http://127.0.0.1:5173
 ```
 
-## Hosted Deployment
+## Fly Deployment
 
-This repo is prepared for a simple free-tier split deployment:
+The backend is configured for Fly.io with a 2 GB machine.
 
-- frontend on Vercel
-- backend on Render
+Deployment files:
 
-Recommended hosted env settings:
+- `fly.toml`
+- `Dockerfile`
+- `.dockerignore`
 
-### Backend
+Suggested Fly secrets / env vars:
 
 ```bash
-PROX_HOSTED_DEMO=true
-ENABLE_LOCAL_TTS=false
-STRICT_STARTUP_VALIDATION=false
+ANTHROPIC_API_KEY=your_key_here
 FRONTEND_ORIGIN=https://your-frontend-domain.example
 CORS_ALLOWED_ORIGINS=https://your-frontend-domain.example
-ANTHROPIC_API_KEY=your_key_here
+DEPLOYMENT_ENV=fly
+ENABLE_LOCAL_TTS=false
+ENABLE_SEMANTIC_SEARCH=false
+STRICT_STARTUP_VALIDATION=false
+PAGE_RENDER_DPI=120
 ```
 
-### Frontend
+Typical Fly workflow:
 
 ```bash
-VITE_API_BASE_URL=https://your-backend-domain.example
+fly launch --no-deploy
+fly secrets set ANTHROPIC_API_KEY=your_key_here
+fly secrets set FRONTEND_ORIGIN=https://your-frontend-domain.example
+fly secrets set CORS_ALLOWED_ORIGINS=https://your-frontend-domain.example
+fly deploy
 ```
 
+The included `fly.toml` targets:
+
+- VM size: `shared-cpu-2x`
+- Memory: `2gb`
 
 ## Suggested Demo Questions
 
@@ -173,14 +182,15 @@ VITE_API_BASE_URL=https://your-backend-domain.example
 
 ```text
 .
-├── agents/            # orchestration and specialist agents
-├── app/               # FastAPI app, config, service wiring
-├── cache/             # processed manual artifacts, page images, speech cache
-├── files/             # source manuals
-├── frontend/          # Vite + React client
-├── preprocessing/     # document extraction and indexing
-├── tools/             # retrieval, TTS, page handling, embeddings
-├── main.py            # backend entrypoint
-├── render.yaml        # Render deployment config
-└── challenge_README.md
+|-- agents/            # orchestration and specialist agents
+|-- app/               # FastAPI app, config, service wiring
+|-- cache/             # processed manual artifacts, page images, speech cache
+|-- files/             # source manuals
+|-- frontend/          # Vite + React client
+|-- preprocessing/     # document extraction and indexing
+|-- tools/             # retrieval, TTS, page handling, embeddings
+|-- main.py            # backend entrypoint
+|-- fly.toml           # Fly.io deployment config
+|-- Dockerfile         # container image for Fly deployment
+`-- challenge_README.md
 ```

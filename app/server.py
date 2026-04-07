@@ -28,7 +28,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup() -> None:
-        if not settings.hosted_demo:
+        if not settings.deployed:
             with contextlib.suppress(Exception):
                 services.ensure_cache()
         try:
@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
             }
             if settings.strict_startup_validation:
                 raise
-        if not settings.hosted_demo:
+        if not settings.deployed:
             services.ensure_cache()
 
     # on_event is deperecated, fix: 
@@ -56,7 +56,7 @@ def create_app() -> FastAPI:
             "sentence_transformers_installed": settings.sentence_transformers_installed,
             "local_tts_enabled": settings.local_tts_enabled,
             "local_tts_ready": settings.local_tts_enabled and services.tts.enabled,
-            "hosted_demo": settings.hosted_demo,
+            "deployment_env": settings.deployment_env,
             "frontend_origin": settings.frontend_origin,
             "semantic_embed_model": settings.semantic_embed_model,
             "semantic_embed_model_path": str(settings.semantic_embed_model_path),
