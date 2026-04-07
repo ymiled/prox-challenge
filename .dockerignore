@@ -8,6 +8,5 @@ cache
 models
 tmp
 debugging_md
-render_logs.txt
 frontend/node_modules
 frontend/dist
