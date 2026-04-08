@@ -1,6 +1,7 @@
 # Vulcan OmniPro Assistant
 
 > Small fix for authentication: API key validation is now working.
+> **Note:** If opening the site for the first time after a period of inactivity, expect ~1 min for the server to cold start before the app becomes responsive (the backend is hosted on Fly.io which shuts down after inactivity and needs time to cold start).
 
 A multimodal support agent for the Vulcan OmniPro 220 welder.
 
