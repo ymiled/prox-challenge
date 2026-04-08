@@ -855,6 +855,11 @@ export default function App() {
 
   return (
     <div className="relative flex flex-col h-screen bg-slate-50 overflow-hidden">
+      {!healthCheckDone && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/30 backdrop-blur-md">
+          <span className="w-8 h-8 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+        </div>
+      )}
       {showApiKeyGate && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/30 backdrop-blur-md px-4">
           <div className="w-full max-w-md rounded-3xl border border-white/60 bg-white/90 shadow-2xl p-6 text-center">
