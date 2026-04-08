@@ -1,5 +1,7 @@
 # Vulcan OmniPro Assistant
 
+> Small fix for authentication: API key validation is now working.
+
 A multimodal support agent for the Vulcan OmniPro 220 welder.
 
 Live website: https://prox-challenge-seven.vercel.app

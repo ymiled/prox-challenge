@@ -30,6 +30,10 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/validate-key': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

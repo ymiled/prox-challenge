@@ -81,7 +81,7 @@ def create_app() -> FastAPI:
             return JSONResponse({"valid": False, "error": "No key provided"}, status_code=400)
         try:
             client = AsyncAnthropic(api_key=key)
-            await asyncio.wait_for(client.models.list(), timeout=5.0)
+            await asyncio.wait_for(client.models.list(), timeout=15.0)
             return JSONResponse({"valid": True})
         except asyncio.TimeoutError:
             return JSONResponse({"valid": False, "error": "Validation timed out"}, status_code=504)

@@ -81,7 +81,7 @@ export async function fetchHealth(): Promise<{
 
 export async function validateAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 6000)
+  const timeout = setTimeout(() => controller.abort(), 20000)
   try {
     const response = await fetch(apiUrl('/validate-key'), {
       method: 'POST',

@@ -176,6 +176,7 @@ export default function App() {
   const [input, setInput] = useState('')
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
   const [serverHasAnthropicKey, setServerHasAnthropicKey] = useState(false)
+  const [healthCheckDone, setHealthCheckDone] = useState(false)
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [apiKeyGateError, setApiKeyGateError] = useState<string | null>(null)
   const [isValidatingKey, setIsValidatingKey] = useState(false)
@@ -205,7 +206,7 @@ export default function App() {
   const voiceEngineLabel = localTtsEnabled && localTtsReady ? 'Using local voice' : browserSpeechSupported ? 'Using browser voice' : 'Voice unavailable'
   const effectiveAnthropicKey = anthropicApiKey.trim()
   const requiresUserKey = !serverHasAnthropicKey
-  const showApiKeyGate = requiresUserKey && !effectiveAnthropicKey
+  const showApiKeyGate = healthCheckDone && requiresUserKey && !effectiveAnthropicKey
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -235,6 +236,9 @@ export default function App() {
         setLocalTtsEnabled(false)
         setLocalTtsReady(false)
         setServerHasAnthropicKey(false)
+      })
+      .finally(() => {
+        if (active) setHealthCheckDone(true)
       })
     return () => {
       active = false
