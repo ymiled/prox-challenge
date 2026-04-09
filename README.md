@@ -1,13 +1,9 @@
 # Vulcan OmniPro Assistant
 
-> Small fix for authentication: API key validation is now working.
-> **Note:** If opening the site for the first time after a period of inactivity, expect ~1 min for the server to cold start before the app becomes responsive (the backend is hosted on Fly.io which shuts down after inactivity and needs time to cold start).
-
 A multimodal support agent for the Vulcan OmniPro 220 welder.
 
 Live website: https://prox-challenge-seven.vercel.app
-
-Demo video: https://drive.google.com/file/d/1BNT4pRl3zFrU1nF5mCNANEnHBZyMjmXj/view?usp=sharing
+> **Note:** If opening the site for the first time after a period of inactivity, expect ~1 min for the server to cold start before the app becomes responsive (the backend is hosted on Fly.io which shuts down after inactivity and needs time to cold start).
 
 API key note: On the hosted website, you need to paste your Anthropic API key before chatting. It is stored only for that browser session. If you run the app locally instead, you can set `ANTHROPIC_API_KEY` in [.env](/abs/path/c:/Users/Youssef/Desktop/projects/prox-challenge/.env).
 

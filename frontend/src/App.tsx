@@ -903,7 +903,7 @@ export default function App() {
       <header className={`flex-shrink-0 bg-slate-900 text-white px-4 py-2 flex items-center justify-between gap-4 shadow-lg z-10 transition-all ${showApiKeyGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center font-bold text-sm shadow-inner">
-            P
+            V
           </div>
           <div>
             <h1 className="font-bold text-base leading-none tracking-wide">Vulcan OmniPro Assistant</h1>
