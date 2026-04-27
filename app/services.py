@@ -12,7 +12,7 @@ from app.config import Settings
 from app.models import ChatRequest, PageRef
 from app.response_cache import ResponseCache
 from preprocessing import Preprocessor
-from tools import LocalEmbeddingClient, LocalTTS, ManualSearchEngine, PageStore
+from tools import DeepgramTTS, LocalEmbeddingClient, LocalTTS, ManualSearchEngine, PageStore
 
 
 class AppServices:
@@ -27,6 +27,10 @@ class AppServices:
         self.preprocessor = Preprocessor(settings)
         self.embedding_client = LocalEmbeddingClient(settings)
         self.tts = LocalTTS(settings)
+        self.deepgram_tts = DeepgramTTS(
+            api_key=settings.deepgram_api_key,
+            voice_model=settings.deepgram_voice_model,
+        )
         self.search_engine = ManualSearchEngine(settings, self.embedding_client)
         self.page_store = PageStore(settings)
         self.retrieval_agent = RetrievalAgent(self.search_engine)
@@ -251,6 +255,13 @@ class AppServices:
         if path.exists():
             return path
         return None
+
+    def runtime_deepgram_tts(self, api_key: str | None = None) -> DeepgramTTS:
+        cleaned_key = (api_key or "").strip() or self.settings.deepgram_api_key
+        return DeepgramTTS(
+            api_key=cleaned_key,
+            voice_model=self.settings.deepgram_voice_model,
+        )
 
     def _artifact_block(self, artifact) -> str:
         media_type = self._artifact_media_type(artifact.artifact_type)

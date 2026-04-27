@@ -18,13 +18,52 @@ export interface StreamCallbacks {
 export interface StreamChatOptions {
   voiceMode?: boolean
   anthropicApiKey?: string
+  signal?: AbortSignal
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').trim().replace(/\/$/, '')
 const isBrowser = typeof window !== 'undefined'
+const CSRF_COOKIE_NAMES = ['__Host-vulcan_csrf_token', 'vulcan_csrf_token']
 
 export function apiUrl(path: string): string {
-  return API_BASE ? `${API_BASE}${path}` : path
+  if (!API_BASE) return path
+  try {
+    return new URL(path, `${API_BASE}/`).toString()
+  } catch {
+    throw new Error(`Invalid VITE_API_BASE_URL: "${API_BASE}". Use a full URL like http://localhost:8000.`)
+  }
+}
+
+export function webSocketUrl(path: string, params?: URLSearchParams): string {
+  try {
+    const base = API_BASE ? new URL(API_BASE) : new URL(window.location.origin)
+    base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
+    base.pathname = path
+    base.search = params?.toString() ? `?${params.toString()}` : ''
+    return base.toString()
+  } catch {
+    throw new Error(`Invalid VITE_API_BASE_URL: "${API_BASE}". Use a full URL like http://localhost:8000.`)
+  }
+}
+
+export function getCsrfToken(): string {
+  if (!isBrowser) return ''
+  for (const name of CSRF_COOKIE_NAMES) {
+    const prefix = `${name}=`
+    const match = document.cookie
+      .split('; ')
+      .find((entry) => entry.startsWith(prefix))
+    if (match) {
+      return decodeURIComponent(match.slice(prefix.length))
+    }
+  }
+  return ''
+}
+
+function withCsrf(headers: Record<string, string> = {}): Record<string, string> {
+  const csrfToken = getCsrfToken()
+  if (!csrfToken) return headers
+  return { ...headers, 'X-CSRF-Token': csrfToken }
 }
 
 function buildNetworkError(path: string, error: unknown): Error {
@@ -56,27 +95,39 @@ function buildNetworkError(path: string, error: unknown): Error {
   return new Error(details.join(' '))
 }
 
-export async function fetchHealth(): Promise<{
+export interface HealthPayload {
   local_tts_ready?: boolean
   local_tts_enabled?: boolean
+  deepgram_enabled?: boolean
   deployment_env?: string
   anthropic_enabled?: boolean
-}> {
+}
+
+export interface CredentialStatusPayload {
+  anthropic_configured: boolean
+  deepgram_configured: boolean
+  anthropic_source?: 'env' | 'stored' | null
+  deepgram_source?: 'env' | 'stored' | null
+}
+
+export interface AuthPayload {
+  authenticated: boolean
+  user?: {
+    username: string
+  }
+}
+
+export async function fetchHealth(): Promise<HealthPayload> {
   let response: Response
   try {
-    response = await fetch(apiUrl('/health'))
+    response = await fetch(apiUrl('/health'), { credentials: 'include' })
   } catch (error) {
     throw buildNetworkError('/health', error)
   }
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
-  return (await response.json()) as {
-    local_tts_ready?: boolean
-    local_tts_enabled?: boolean
-    deployment_env?: string
-    anthropic_enabled?: boolean
-  }
+  return (await response.json()) as HealthPayload
 }
 
 export async function validateAnthropicKey(key: string): Promise<{ valid: boolean; error?: string }> {
@@ -88,6 +139,7 @@ export async function validateAnthropicKey(key: string): Promise<{ valid: boolea
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ anthropic_api_key: key }),
       signal: controller.signal,
+      credentials: 'include',
     })
     return (await response.json()) as { valid: boolean; error?: string }
   } catch (error) {
@@ -100,13 +152,123 @@ export async function validateAnthropicKey(key: string): Promise<{ valid: boolea
   }
 }
 
+export async function validateDeepgramKey(key: string): Promise<{ valid: boolean; error?: string }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 20000)
+  try {
+    const response = await fetch(apiUrl('/validate-deepgram-key'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deepgram_api_key: key }),
+      signal: controller.signal,
+      credentials: 'include',
+    })
+    return (await response.json()) as { valid: boolean; error?: string }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return { valid: false, error: 'Validation timed out. Check your connection and try again.' }
+    }
+    return { valid: false, error: 'Could not reach the server. Check your connection and try again.' }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function fetchCredentialStatus(): Promise<CredentialStatusPayload> {
+  let response: Response
+  try {
+    response = await fetch(apiUrl('/credentials/status'), { credentials: 'include' })
+  } catch (error) {
+    throw buildNetworkError('/credentials/status', error)
+  }
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return (await response.json()) as CredentialStatusPayload
+}
+
+export async function saveAnthropicCredential(key: string): Promise<{ saved: boolean; error?: string }> {
+  const response = await fetch(apiUrl('/credentials/anthropic'), {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ api_key: key }),
+    credentials: 'include',
+  })
+  return (await response.json()) as { saved: boolean; error?: string }
+}
+
+export async function deleteAnthropicCredential(): Promise<{ deleted: boolean }> {
+  const response = await fetch(apiUrl('/credentials/anthropic'), {
+    method: 'DELETE',
+    headers: withCsrf(),
+    credentials: 'include',
+  })
+  return (await response.json()) as { deleted: boolean }
+}
+
+export async function saveDeepgramCredential(key: string): Promise<{ saved: boolean; error?: string }> {
+  const response = await fetch(apiUrl('/credentials/deepgram'), {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ api_key: key }),
+    credentials: 'include',
+  })
+  return (await response.json()) as { saved: boolean; error?: string }
+}
+
+export async function deleteDeepgramCredential(): Promise<{ deleted: boolean }> {
+  const response = await fetch(apiUrl('/credentials/deepgram'), {
+    method: 'DELETE',
+    headers: withCsrf(),
+    credentials: 'include',
+  })
+  return (await response.json()) as { deleted: boolean }
+}
+
+export async function signup(username: string, password: string): Promise<AuthPayload & { error?: string }> {
+  const response = await fetch(apiUrl('/auth/signup'), {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ username, password }),
+    credentials: 'include',
+  })
+  return (await response.json()) as AuthPayload & { error?: string }
+}
+
+export async function login(username: string, password: string): Promise<AuthPayload & { error?: string }> {
+  const response = await fetch(apiUrl('/auth/login'), {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ username, password }),
+    credentials: 'include',
+  })
+  return (await response.json()) as AuthPayload & { error?: string }
+}
+
+export async function logout(): Promise<{ ok?: boolean }> {
+  const response = await fetch(apiUrl('/auth/logout'), {
+    method: 'POST',
+    headers: withCsrf(),
+    credentials: 'include',
+  })
+  return (await response.json()) as { ok?: boolean }
+}
+
+export async function fetchAuthMe(): Promise<AuthPayload> {
+  const response = await fetch(apiUrl('/auth/me'), {
+    credentials: 'include',
+  })
+  return (await response.json()) as AuthPayload
+}
+
 export async function synthesizeSpeech(text: string): Promise<string> {
   let response: Response
   try {
     response = await fetch(apiUrl('/speech'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ text }),
+      credentials: 'include',
     })
   } catch (error) {
     throw buildNetworkError('/speech', error)
@@ -129,15 +291,18 @@ export async function streamChat(
   try {
     response = await fetch(apiUrl('/chat'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: withCsrf({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         message,
         history,
         voice_mode: Boolean(options.voiceMode),
         anthropic_api_key: options.anthropicApiKey?.trim() || undefined,
       }),
+      credentials: 'include',
+      signal: options.signal,
     })
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return
     callbacks.onError({ type: 'error', message: buildNetworkError('/chat', error).message })
     return
   }
@@ -152,31 +317,36 @@ export async function streamChat(
   const decoder = new TextDecoder()
   let buffer = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
 
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
 
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const raw = line.slice(6).trim()
-      if (!raw) continue
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (!raw) continue
 
-      let event: SSEEvent
-      try {
-        event = JSON.parse(raw) as SSEEvent
-      } catch {
-        continue
+        let event: SSEEvent
+        try {
+          event = JSON.parse(raw) as SSEEvent
+        } catch {
+          continue
+        }
+
+        if (event.type === 'text_delta') callbacks.onTextDelta(event)
+        else if (event.type === 'image') callbacks.onImage(event)
+        else if (event.type === 'artifact') callbacks.onArtifact(event)
+        else if (event.type === 'done') callbacks.onDone(event)
+        else if (event.type === 'error') callbacks.onError(event)
       }
-
-      if (event.type === 'text_delta') callbacks.onTextDelta(event)
-      else if (event.type === 'image') callbacks.onImage(event)
-      else if (event.type === 'artifact') callbacks.onArtifact(event)
-      else if (event.type === 'done') callbacks.onDone(event)
-      else if (event.type === 'error') callbacks.onError(event)
     }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
+    throw err
   }
 }

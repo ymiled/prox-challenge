@@ -2,10 +2,13 @@
 
 A multimodal support agent for the Vulcan OmniPro 220 welder.
 
-Live website: https://prox-challenge-seven.vercel.app
-> **Note:** If opening the site for the first time after a period of inactivity, expect ~1 min for the server to cold start before the app becomes responsive (the backend is hosted on Fly.io which shuts down after inactivity and needs time to cold start).
+Try it on: https://vulcan-omnipro-assistant.fly.dev
 
-API key note: On the hosted website, you need to paste your Anthropic API key before chatting. It is stored only for that browser session. If you run the app locally instead, you can set `ANTHROPIC_API_KEY` in [.env](/abs/path/c:/Users/Youssef/Desktop/projects/prox-challenge/.env).
+You will need to enter an Anthropic API key (to use the assistant agent) and Deepgram API key (to enable the AI voice agent) in API settings, where they are validated and stored per account in the backend database.
+
+Production deployment should be served from a single Fly app host.
+> **Note:** If opening the site for the first time after a period of inactivity, expect ~1 min for the server to cold start before the app becomes responsive.
+
 
 This project turns a dense product manual into an interactive assistant that can:
 
@@ -18,77 +21,9 @@ This project turns a dense product manual into an interactive assistant that can
 The goal is not just retrieval. The app is designed to feel like a practical garage-side assistant for someone actively trying to use the machine.
 
 
-## Local Setup
-
-For local use, set your Anthropic key in `ANTHROPIC_API_KEY` inside [.env](/abs/path/c:/Users/Youssef/Desktop/projects/prox-challenge/.env) before starting the app.
-
-### Requirements
-
-- Python 3.11+
-- Node.js 20+
-- An Anthropic API key
-
-### 1. Install backend dependencies
-
-```bash
-uv sync
-```
-
-If you don't have `uv`:
-
-```bash
-pip install uv
-```
-
-### 2. Install frontend dependencies
-
-```bash
-cd frontend
-npm install
-cd ..
-```
-
-### 3. Configure environment variables
-
-```bash
-# edit .env and set ANTHROPIC_API_KEY=your_key_here
-```
-
-Optional local settings:
-
-```bash
-FRONTEND_ORIGIN=http://localhost:5173
-STRICT_STARTUP_VALIDATION=false
-ENABLE_LOCAL_TTS=true
-ENABLE_CROSS_ENCODER=true          # local reranking (adds ~500ms, improves precision)
-ENABLE_CONTEXTUAL_COMPRESSION=true # sentence-level compression (on by default)
-ENABLE_VISION_CACHE=true           # precompute vision results at startup
-ENABLE_RESPONSE_CACHE=true         # LRU cache for full responses
-```
-
-### 4. Run the backend
-
-```bash
-uv run uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-### 5. Run the frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open: `http://localhost:5173`
-
-If you don't want to set a server-side key, the frontend supports bring-your-own-key mode: each user enters their Anthropic key in the UI on first load. Keys are validated against the Anthropic API before being accepted and stored only in the current browser session.
-
-
-
-
 ## How The Agent Works
 
-1. The user asks a question in text or voice.
+1. The user asks a question in text or by voice.
 2. The orchestrator classifies the request: query type, ambiguity level, whether an artifact is needed.
 3. Hybrid retrieval (BM25 + semantic embeddings) gathers relevant manual pages and structured data.
 4. A cross-encoder reranks the candidates for precision before passing them to the LLM.
@@ -96,7 +31,7 @@ If you don't want to set a server-side key, the frontend supports bring-your-own
 6. A vision agent reads page images for spatial/visual questions (polarity diagrams, wiring schematics, control panels).
 7. A diagnostic agent produces structured troubleshooting output (causes, steps, flowchart spec) for problem questions.
 8. An artifact agent generates interactive React components, SVG diagrams, or HTML when a visual answer is more useful than text.
-9. The frontend streams the answer live, renders cited page thumbnails and artifacts inline, and optionally reads the answer aloud.
+9. The frontend streams the answer live, renders cited page thumbnails and artifacts inline, and can read the answer aloud with Deepgram TTS.
 10. The full response is stored in an LRU cache so repeated identical questions are served instantly from memory.
 
 ## Agent Architecture
@@ -160,37 +95,83 @@ Artifacts are delivered as SSE events (`type: "artifact"`) and rendered in sandb
 
 ## Voice Support
 
-- Tap-to-talk voice input via browser Web Speech API
+- Tap-to-talk voice input via Deepgram streaming transcription
+- Spoken assistant replies via Deepgram TTS
 - Auto-speak on assistant replies (off by default)
 - Manual Speak / Stop controls per message
 - Voice commands: `show me the page`, `open the diagram`, `read that again`, `stop`
-- `no-speech` and other browser errors shown as friendly messages, not raw error codes
+- If Deepgram is not configured, the app falls back to browser speech features where available
+- Voice and microphone errors are shown as friendly messages, not raw error codes
 
 
-## Project Structure
+## Local Setup
 
-```text
-.
-├── agents/            # orchestrator + 4 specialist agents
-├── app/               # FastAPI server, config, service wiring, prompts
-│   ├── response_cache.py    # LRU in-memory SSE response cache
-│   └── services.py          # AppServices: streaming, caching, vision warmup
-├── cache/             # preprocessed manual: page index, chunk index, structured JSON, page images
-├── files/             # source PDFs
-├── frontend/          # Vite + React client
-│   └── src/
-│       ├── App.tsx          # main app state and streaming logic
-│       ├── components/
-│       │   ├── Message.tsx          # chat message renderer
-│       │   └── ArtifactRenderer.tsx # iframe-based artifact renderer
-│       └── lib/
-│           ├── api.ts          # SSE streaming client
-│           ├── types.ts        # shared TypeScript types
-│           └── parseArtifacts.ts
-├── preprocessing/     # PDF -> page images + text chunks + structured JSON
-├── tools/             # hybrid search engine (BM25+semantic+cross-encoder), embeddings, TTS, page store
-├── benchmark.py       # local benchmark: compression, cache, retrieval quality
-├── main.py            # backend entrypoint
-├── fly.toml           # Fly.io config
-└── Dockerfile
+For local use, set your Anthropic key in `.env` before starting the app.
+
+### Requirements
+
+- Python 3.11+
+- Node.js 20+
+- An Anthropic API key
+- A Deepgram API key for voice input and AI voice playback
+
+### 1. Install backend dependencies
+
+```bash
+uv sync
 ```
+
+If you don't have `uv`:
+
+```bash
+pip install uv
+```
+
+### 2. Install frontend dependencies
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### 3. Configure environment variables
+
+```bash
+# edit .env and set:
+# ANTHROPIC_API_KEY=your_key_here
+# DEEPGRAM_API_KEY=your_key_here
+# APP_SECRET_KEY=your_long_random_secret
+# DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vulcan_omnipro_assistant
+```
+
+Optional local settings:
+
+```bash
+FRONTEND_ORIGIN=http://localhost:5173
+STRICT_STARTUP_VALIDATION=false
+DEEPGRAM_VOICE_MODEL=aura-asteria-en
+ENABLE_LOCAL_TTS=true
+ENABLE_CROSS_ENCODER=true          # local reranking (adds ~500ms, improves precision)
+ENABLE_CONTEXTUAL_COMPRESSION=true # sentence-level compression (on by default)
+ENABLE_VISION_CACHE=true           # precompute vision results at startup
+ENABLE_RESPONSE_CACHE=true         # LRU cache for full responses
+```
+
+### 4. Run the backend
+
+```bash
+uv run uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+### 5. Run the frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open: `http://localhost:5173`
+
+If you don't want to set shared server-side keys in `.env`, the app supports bring-your-own-key mode through the in-app API settings after login. Keys are validated before being saved to the backend database for the signed-in account.
+

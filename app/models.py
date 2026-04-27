@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
 
 class SpeechRequest(BaseModel):
     text: str = Field(min_length=1)
+    deepgram_api_key: str | None = Field(default=None, min_length=1)
 
 
 class PageRef(BaseModel):

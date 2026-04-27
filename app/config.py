@@ -2,6 +2,7 @@ from functools import lru_cache
 import importlib.util
 from pathlib import Path
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -19,13 +20,23 @@ class Settings:
     def __init__(self) -> None:
         root = Path(__file__).resolve().parent.parent
         self.project_root = root
+        self.frontend_dir = root / "frontend"
+        self.frontend_dist_dir = self.frontend_dir / "dist"
         self.files_dir = root / "files"
         self.cache_dir = root / "cache"
         self.pages_dir = self.cache_dir / "pages"
         self.audio_dir = self.cache_dir / "audio"
         self.text_dir = self.cache_dir / "text"
         self.structured_dir = self.cache_dir / "structured"
+        self.credentials_file = self.cache_dir / "credentials.json"
+        self.database_file = self.cache_dir / "app.db"
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
         self.api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        self.deepgram_api_key = (
+            os.getenv("DEEPGRAM_API_KEY", "").strip()
+            or os.getenv("DEEPGRAM_KEY", "").strip()
+        )
+        self.deepgram_voice_model = os.getenv("DEEPGRAM_VOICE_MODEL", "aura-asteria-en").strip()
         self.orchestrator_model = self.ORCHESTRATOR_MODEL
         self.vision_model = self.VISION_MODEL
         self.diagnostic_model = self.DIAGNOSTIC_MODEL
@@ -76,6 +87,16 @@ class Settings:
         self.response_cache_enabled = os.getenv("ENABLE_RESPONSE_CACHE", "true").strip().lower() == "true"
         self.response_cache_max_size = int(os.getenv("RESPONSE_CACHE_MAX_SIZE", "200"))
         self.claude_sdk_enabled = os.getenv("ENABLE_CLAUDE_AGENT_SDK", "false").strip().lower() == "true"
+        self.app_secret_key = os.getenv("APP_SECRET_KEY", "local-dev-only-secret-change-me").strip()
+        self.session_ttl_days = int(os.getenv("SESSION_TTL_DAYS", "30").strip())
+        self.session_cookie_name = "__Host-vulcan_auth_session" if self.deployed else "vulcan_auth_session"
+        self.csrf_cookie_name = "__Host-vulcan_csrf_token" if self.deployed else "vulcan_csrf_token"
+        self.csrf_header_name = "X-CSRF-Token"
+        self.session_cookie_samesite = self._normalize_samesite(
+            os.getenv("SESSION_COOKIE_SAMESITE", "lax").strip()
+        )
+        self.auth_rate_limit_window_seconds = int(os.getenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "900").strip())
+        self.auth_rate_limit_max_attempts = int(os.getenv("AUTH_RATE_LIMIT_MAX_ATTEMPTS", "8").strip())
 
     @property
     def cache_ready_file(self) -> Path:
@@ -84,6 +105,10 @@ class Settings:
     @property
     def anthropic_enabled(self) -> bool:
         return bool(self.api_key)
+
+    @property
+    def deepgram_enabled(self) -> bool:
+        return bool(self.deepgram_api_key)
 
     @property
     def claude_sdk_installed(self) -> bool:
@@ -101,6 +126,22 @@ class Settings:
             "diagnostic": self.diagnostic_model,
             "artifact": self.artifact_model,
         }
+
+    @property
+    def app_secret_key_looks_secure(self) -> bool:
+        if not self.app_secret_key or self.app_secret_key == "local-dev-only-secret-change-me":
+            return False
+        if len(self.app_secret_key) < 32:
+            return False
+        return secrets.compare_digest(self.app_secret_key.strip(), self.app_secret_key) and bool(self.app_secret_key)
+
+    def _normalize_samesite(self, value: str) -> str:
+        lowered = value.lower()
+        if lowered not in {"lax", "strict", "none"}:
+            return "lax"
+        if lowered == "none" and not self.deployed:
+            return "lax"
+        return lowered
 
 
 @lru_cache(maxsize=1)

@@ -15,7 +15,11 @@ dependencies = [
   "rank-bm25>=0.2.2",
   "sentence-transformers>=3.0.0",
   "uvicorn>=0.34.0",
-  "requests"
+  "requests",
+  "httpx>=0.27.0",
+  "websockets>=12.0",
+  "cryptography>=43.0.0",
+  "psycopg[binary]>=3.2.0"
 ]
 
 [project.scripts]

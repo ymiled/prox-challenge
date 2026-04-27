@@ -1,3 +1,13 @@
+FROM node:20-bookworm-slim AS frontend-builder
+
+WORKDIR /frontend
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -18,7 +28,9 @@ COPY agents ./agents
 COPY preprocessing ./preprocessing
 COPY tools ./tools
 COPY files ./files
+COPY frontend ./frontend
 COPY main.py ./
+COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
 RUN uv sync --frozen
 RUN uv run python tools/build_cache.py
