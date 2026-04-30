@@ -50,14 +50,14 @@ function CitationPills({ citations }: { citations: PageRef[] }) {
     return true
   })
   return (
-    <div className="flex flex-wrap gap-1.5 mt-2">
+    <div className="mt-3 flex flex-wrap gap-2">
       {unique.slice(0, 5).map((c) => (
         <a
           key={`${c.doc}-${c.page}`}
           href={apiUrl(`/pages/${c.doc}/${c.page}`)}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs text-slate-400 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded-full transition-colors"
+          className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-[11px] text-slate-400 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-slate-200"
           title={c.excerpt ?? ''}
         >
           {c.doc} p.{c.page}
@@ -70,18 +70,18 @@ function CitationPills({ citations }: { citations: PageRef[] }) {
 function ManualImages({ images }: { images: ManualImage[] }) {
   if (!images.length) return null
   return (
-    <div className="flex gap-2 flex-wrap mt-2">
+    <div className="mt-4 flex flex-wrap gap-3">
       {images.map((img, index) => (
         <a
           key={index}
           href={img.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="group block border border-slate-200 rounded-lg overflow-hidden hover:border-orange-400 hover:shadow-md transition-all"
-          style={{ width: '120px' }}
+          className="group block overflow-hidden rounded-2xl border border-white/10 bg-[#11141a] shadow-[0_10px_30px_rgba(0,0,0,0.18)] transition-all duration-150 hover:-translate-y-0.5 hover:border-white/20 hover:bg-[#141821]"
+          style={{ width: '148px' }}
         >
-          <img src={img.src ?? img.url} alt={img.caption} className="w-full object-cover" style={{ height: '84px' }} />
-          <p className="text-xs text-slate-500 group-hover:text-orange-600 px-2 py-1 truncate bg-white">{img.caption}</p>
+          <img src={img.src ?? img.url} alt={img.caption} className="h-[96px] w-full object-cover" />
+          <p className="truncate border-t border-white/10 bg-[#11141a] px-3 py-2 text-xs text-slate-400 group-hover:text-slate-200">{img.caption}</p>
         </a>
       ))}
     </div>
@@ -95,15 +95,15 @@ function InlineArtifactPreviews({ artifacts }: { artifacts: Artifact[] }) {
       {artifacts.map((artifact) => (
         <div
           key={artifact.id}
-          className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm ring-1 ring-slate-100"
+          className="overflow-hidden rounded-2xl border border-white/10 bg-[#0f1218] shadow-[0_12px_32px_rgba(0,0,0,0.2)]"
         >
-          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50/90">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-white/[0.03] px-4 py-3">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[10px] font-semibold text-slate-500 bg-white border border-slate-200 rounded px-1.5 py-0.5 flex-shrink-0">
+              <span className="flex-shrink-0 rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-400">
                 {artifactIcon(artifact.type)}
               </span>
-              <span className="text-xs font-semibold text-slate-800 truncate">{artifact.title}</span>
-              <span className="text-[10px] uppercase tracking-wide text-slate-400 flex-shrink-0 hidden sm:inline">
+              <span className="truncate text-xs font-semibold text-slate-100">{artifact.title}</span>
+              <span className="hidden flex-shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500 sm:inline">
                 {artifact.type}
               </span>
             </div>
@@ -111,13 +111,13 @@ function InlineArtifactPreviews({ artifacts }: { artifacts: Artifact[] }) {
               <a
                 href={artifact.url}
                 download={artifactFilename(artifact)}
-                className="text-[11px] font-medium text-slate-500 hover:text-orange-600 transition-colors"
+                className="font-mono text-[11px] font-medium text-slate-400 transition-colors hover:text-white"
               >
                 Download
               </a>
             </div>
           </div>
-          <div className="bg-slate-50">
+          <div className="bg-[#0b0e13]">
             <ArtifactRenderer artifact={artifact} variant="inline" />
           </div>
         </div>
@@ -136,8 +136,9 @@ export default function Message({
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="bg-orange-500 text-white rounded-2xl rounded-tr-md px-4 py-2.5 max-w-[78%] text-sm leading-relaxed shadow-sm">
-          {message.text}
+        <div className="max-w-[80%] rounded-[20px] rounded-br-md border border-white/10 bg-[#171b23] px-4 py-3 text-sm leading-6 text-slate-100 shadow-[0_14px_34px_rgba(0,0,0,0.18)]">
+          <div className="mb-1 font-mono text-[11px] uppercase tracking-[0.12em] text-slate-500">You</div>
+          <div>{message.text}</div>
         </div>
       </div>
     )
@@ -146,42 +147,45 @@ export default function Message({
   const hasArtifacts = message.artifacts.length > 0
   return (
     <div className="flex justify-start w-full min-w-0">
-      <div className={hasArtifacts ? 'max-w-full min-w-0 flex-1 space-y-2' : 'max-w-[85%] space-y-1'}>
-        <div className="flex items-start gap-2 min-w-0">
+      <div className={hasArtifacts ? 'max-w-full min-w-0 flex-1 space-y-3' : 'max-w-[88%] space-y-2'}>
+        <div className="flex items-start gap-3 min-w-0">
           <div
-            className="mt-1 h-7 px-2 rounded-full bg-orange-100 border border-orange-200/80 flex items-center justify-center flex-shrink-0 text-[11px] font-semibold leading-none text-orange-700"
+            className="mt-1 flex h-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] px-2.5 font-mono text-[11px] font-semibold leading-none text-slate-300"
             title="Assistant"
             aria-hidden
           >
             Vulcan
           </div>
-          <div className="bg-white rounded-2xl rounded-tl-md px-4 py-3 shadow-sm border border-slate-100 flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-3">
-              <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed flex-1">
-                {message.text || (message.isStreaming ? '' : '-')}
-                {message.isStreaming && (
-                  <span className="inline-block w-0.5 h-4 bg-slate-400 ml-0.5 animate-pulse align-middle" />
-                )}
-              </p>
+          <div className="min-w-0 flex-1 rounded-[20px] rounded-tl-md border border-white/10 bg-[#11151c] px-4 py-3.5 shadow-[0_14px_34px_rgba(0,0,0,0.18)]">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-slate-500">Assistant</div>
               {canSpeak && message.text && !message.isStreaming && (
                 <button
                   type="button"
                   onClick={() => (isSpeaking ? onStopSpeaking?.() : onSpeak?.(message))}
-                  className="text-xs font-medium text-slate-500 hover:text-orange-600 transition-colors flex-shrink-0"
+                  className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-[11px] font-medium text-slate-400 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                 >
                   {isSpeaking ? 'Stop' : 'Speak'}
                 </button>
               )}
             </div>
+            <div className="flex items-start justify-between gap-3">
+              <p className="flex-1 whitespace-pre-wrap text-sm leading-7 text-slate-100">
+                {message.text || (message.isStreaming ? '' : '-')}
+                {message.isStreaming && (
+                  <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse align-middle bg-slate-500" />
+                )}
+              </p>
+            </div>
             {message.error && (
-              <p className="text-xs text-red-500 mt-2 bg-red-50 rounded px-2 py-1">
+              <p className="mt-3 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
                 Error: {message.error}
               </p>
             )}
           </div>
         </div>
 
-        <div className="pl-8 w-full min-w-0">
+        <div className="w-full min-w-0 pl-11">
           <ManualImages images={message.images} />
           <InlineArtifactPreviews artifacts={message.artifacts} />
           {!message.isStreaming && <CitationPills citations={message.citations} />}

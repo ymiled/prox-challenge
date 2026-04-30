@@ -26,6 +26,7 @@ export class DeepgramASR {
     onTranscript: (result: TranscriptResult) => void,
     onError: (message: string) => void,
     apiKey?: string,
+    onStreamReady?: () => void,
   ): Promise<void> {
     if (this.started) return
 
@@ -43,6 +44,11 @@ export class DeepgramASR {
       onError('Microphone access denied. Please allow microphone permission and try again.')
       return
     }
+
+    // getUserMedia resolved — AVAudioSession is now .playAndRecord.
+    // Notify the caller so it can try to revive the TTS AudioContext while
+    // the session mode supports both recording and playback.
+    onStreamReady?.()
 
     const params = new URLSearchParams()
     if (apiKey?.trim()) params.set('deepgram_api_key', apiKey.trim())
@@ -130,8 +136,20 @@ export class DeepgramASR {
     setTimeout(() => this.ws?.close(), 200)
     this.processor?.disconnect()
     this.source?.disconnect()
-    this.audioCtx?.close().catch(() => undefined)
-    this.stream?.getTracks().forEach((t) => t.stop())
+    // Delay stopping mic tracks — stopping immediately causes iOS to revert
+    // AVAudioSession from .playAndRecord to .ambient, which suspends the TTS
+    // AudioContext before it can start playing. Keeping tracks alive for 3 s
+    // gives TTS time to start within the same .playAndRecord session.
+    const streamToStop = this.stream
+    setTimeout(() => streamToStop?.getTracks().forEach((t) => t.stop()), 3000)
+    // Delay AudioContext.close() by 3 s.
+    // On iOS/macOS Safari the ASR context holds AVAudioSession in
+    // .playAndRecord mode. Closing it immediately causes the OS to
+    // reconfigure the session, which suspends the TTS AudioContext before
+    // it can start playing (the LLM response still takes 1-3 s to arrive).
+    // Keeping the context alive until TTS is underway avoids the interruption.
+    const ctxToClose = this.audioCtx
+    setTimeout(() => ctxToClose?.close().catch(() => undefined), 3000)
     this.ws = null
     this.processor = null
     this.source = null

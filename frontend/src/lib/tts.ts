@@ -2,8 +2,12 @@ import { apiUrl, getCsrfToken } from './api'
 
 /**
  * Pulls complete sentences from the front of an accumulator string.
- * Anything at the tail that hasn't been closed yet stays in `remaining`
- * so the next delta can complete it, enabling sentence-level streaming TTS.
+ *
+ * Only splits when the character *after* the trailing whitespace is visible
+ * (capital letter, digit, quote, newline). This prevents premature splits at
+ * the tail of the current buffer — e.g. "Hi! " alone will NOT be extracted;
+ * we wait for the next LLM token so we can confirm a new sentence is starting.
+ * The onDone handler flushes whatever remains at stream end.
  */
 export function drainSentences(buffer: string): { sentences: string[]; remaining: string } {
   const sentences: string[] = []
@@ -30,7 +34,6 @@ export function drainSentences(buffer: string): { sentences: string[]; remaining
 
     const nextChar = buffer[gapEnd]
     const shouldSplit =
-      nextChar === undefined ||
       nextChar === '\n' ||
       /["'([{A-Z0-9]/.test(nextChar)
 
@@ -48,19 +51,11 @@ export function drainSentences(buffer: string): { sentences: string[]; remaining
   return { sentences, remaining: buffer.slice(start) }
 }
 
-type Task = () => Promise<void>
-
 /**
  * Queues sentences and plays them sequentially using Deepgram Aura TTS.
- *
- * Uses the Web Audio API (AudioContext + decodeAudioData) when a pre-unlocked
- * AudioContext is provided. This bypasses browser autoplay restrictions that
- * block HTMLAudioElement.play() in async callbacks — the root cause of "must
- * press Speak manually in production". Falls back to HTMLAudioElement only
- * when no AudioContext is available.
  */
 export class TTSPlayer {
-  private queue: Task[] = []
+  private queue: string[] = []
   private processing = false
   private stopped = false
   private currentSource: AudioBufferSourceNode | null = null
@@ -72,65 +67,97 @@ export class TTSPlayer {
     private readonly onPlayEnd?: () => void,
     private readonly onError?: (message: string) => void,
     private readonly deepgramApiKey?: string,
-    // Provide a getter so callers can pass the ref value at play-time,
-    // not at construction-time (the context may not exist yet at construction).
     private readonly getAudioContext?: () => AudioContext | null,
   ) {}
 
   enqueue(text: string): void {
     if (this.stopped || !text.trim()) return
-    this.queue.push(() => this.fetchAndPlay(text))
+    this.queue.push(text)
     if (!this.processing) void this.drain()
   }
 
   private async drain(): Promise<void> {
     this.processing = true
     this.firstStarted = false
-    while (this.queue.length > 0 && !this.stopped) {
-      const task = this.queue.shift()!
-      try {
-        await task()
-      } catch {
-        // one failed sentence must not silence the rest
+
+    let nextFetch: Promise<ArrayBuffer | null> | null =
+      this.queue.length > 0 ? this.fetchAudio(this.queue.shift()!) : null
+
+    while (nextFetch !== null && !this.stopped) {
+      const bufPromise = nextFetch
+
+      nextFetch = this.queue.length > 0 && !this.stopped
+        ? this.fetchAudio(this.queue.shift()!)
+        : null
+
+      const buf = await bufPromise
+
+      if (nextFetch === null && this.queue.length > 0 && !this.stopped) {
+        nextFetch = this.fetchAudio(this.queue.shift()!)
+      }
+
+      if (buf && !this.stopped) {
+        try {
+          await this.playBuffer(buf)
+        } catch {
+          // one failed sentence must not silence the rest
+        }
+      }
+
+      if (nextFetch === null && this.queue.length > 0 && !this.stopped) {
+        nextFetch = this.fetchAudio(this.queue.shift()!)
       }
     }
+
     this.processing = false
     if (!this.stopped) this.onPlayEnd?.()
   }
 
-  private async fetchAndPlay(text: string): Promise<void> {
-    if (this.stopped) return
+  private async fetchAudio(text: string): Promise<ArrayBuffer | null> {
+    if (this.stopped) return null
+    try {
+      const response = await fetch(apiUrl('/speech/stream'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken(),
+        },
+        body: JSON.stringify({ text, deepgram_api_key: this.deepgramApiKey?.trim() || undefined }),
+        credentials: 'include',
+      })
 
-    const response = await fetch(apiUrl('/speech/stream'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': getCsrfToken(),
-      },
-      body: JSON.stringify({ text, deepgram_api_key: this.deepgramApiKey?.trim() || undefined }),
-      credentials: 'include',
-    })
-
-    if (!response.ok) {
-      let message = `TTS HTTP ${response.status}`
-      try {
-        const payload = (await response.json()) as { error?: string }
-        if (payload.error) message = payload.error
-      } catch {
-        // keep fallback message
+      if (!response.ok) {
+        let message = `TTS HTTP ${response.status}`
+        try {
+          const payload = (await response.json()) as { error?: string }
+          if (payload.error) message = payload.error
+        } catch {
+          // keep fallback message
+        }
+        this.onError?.(message)
+        return null
       }
-      this.onError?.(message)
-      throw new Error(message)
+
+      const arrayBuffer = await response.arrayBuffer()
+      return this.stopped ? null : arrayBuffer
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'TTS request failed'
+      if (!this.stopped) this.onError?.(msg)
+      return null
     }
+  }
 
-    const arrayBuffer = await response.arrayBuffer()
-    if (this.stopped) return
-
-    // Prefer Web Audio API — once an AudioContext is resumed via a user gesture
-    // it can decode+play audio freely without further gesture requirements,
-    // which is exactly what we need for auto-speak in async callbacks.
+  private async playBuffer(arrayBuffer: ArrayBuffer): Promise<void> {
     const ctx = this.getAudioContext?.()
+
     if (ctx && ctx.state !== 'closed') {
+      if (ctx.state === 'suspended') {
+        try {
+          await ctx.resume()
+        } catch {
+          // ignore
+        }
+      }
       await this.playWithAudioContext(ctx, arrayBuffer)
     } else {
       await this.playWithHtmlAudio(arrayBuffer)
@@ -138,10 +165,6 @@ export class TTSPlayer {
   }
 
   private async playWithAudioContext(ctx: AudioContext, arrayBuffer: ArrayBuffer): Promise<void> {
-    // Do NOT call ctx.resume() here — this is an async callback (outside any
-    // user gesture), so Safari HTTPS will reject it silently. The app-layer
-    // unlock effect keeps the context running via synchronous gesture handlers.
-    // If the context is still suspended, fall back to HTMLAudioElement.
     if (ctx.state === 'suspended') {
       await this.playWithHtmlAudio(arrayBuffer)
       return
@@ -149,10 +172,8 @@ export class TTSPlayer {
 
     let audioBuffer: AudioBuffer
     try {
-      // decodeAudioData consumes the buffer; pass a copy so the original is untouched
       audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
     } catch {
-      // Format unsupported in this browser — fall back to HTML Audio
       await this.playWithHtmlAudio(arrayBuffer)
       return
     }

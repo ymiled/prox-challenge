@@ -256,6 +256,10 @@ function pickEnglishVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice 
   )
 }
 
+function logVoiceDebug(event: string, details?: Record<string, unknown>) {
+  console.debug('[voice-debug]', event, details ?? {})
+}
+
 export default function App() {
   const [messages, setMessages] = useState<MessageType[]>([])
   const [input, setInput] = useState('')
@@ -286,8 +290,8 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [autoSpeak, setAutoSpeak] = useState(() => localStorage.getItem('autoSpeak') === 'true')
-  const [conversationModeEnabled, setConversationModeEnabled] = useState(() => localStorage.getItem('conversationMode') === 'true')
+  const [autoSpeak, setAutoSpeak] = useState(() => localStorage.getItem('autoSpeak') === 'false')
+  const [conversationModeEnabled, setConversationModeEnabled] = useState(() => localStorage.getItem('conversationMode') === 'false')
   const [isListening, setIsListening] = useState(false)
   const [isWakeListening, setIsWakeListening] = useState(false)
   const [voiceMissed, setVoiceMissed] = useState(false)
@@ -311,6 +315,7 @@ export default function App() {
   const streamingArtifactsRef = useRef<Artifact[]>([])
   const deepgramAsrRef = useRef<DeepgramASR | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
+  const audioCtxOscRef = useRef<OscillatorNode | null>(null)
   const streamAbortControllerRef = useRef<AbortController | null>(null)
   const deepgramModeRef = useRef<'idle' | 'manual' | 'wake' | 'conversation'>('idle')
   const conversationArmedRef = useRef(false)
@@ -320,15 +325,16 @@ export default function App() {
   const deepgramTtsPlayerRef = useRef<TTSPlayer | null>(null)
   const ttsBufferRef = useRef('')
   const browserSpeechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
-  const speechSupported = true
+  const browserRecognitionSupported = typeof window !== 'undefined' && getSpeechRecognitionCtor() !== null
   const voiceLoopEnabled = autoSpeak || conversationModeEnabled
   const deepgramEnabled =
     !forceDeepgramKeyOverride && !disableServerDeepgramForSession && serverHasDeepgramKey
-  const recognitionSupported = deepgramEnabled || (typeof window !== 'undefined' && getSpeechRecognitionCtor() !== null)
+  const speechSupported = deepgramEnabled || localTtsEnabled || browserSpeechSupported
+  const recognitionSupported = deepgramEnabled || browserRecognitionSupported
   const requiresUserKey = !serverHasAnthropicKey || forceApiKeyOverride
   const showAuthGate = authChecked && currentUser === null
   const showApiKeyGate = healthCheckDone && authChecked && currentUser !== null && requiresUserKey
-  const showDeepgramKeyGate = healthCheckDone && authChecked && currentUser !== null && forceDeepgramKeyOverride
+  const showDeepgramKeyGate = false
 
   useEffect(() => {
     const el = scrollRef.current
@@ -397,11 +403,46 @@ export default function App() {
 
   useEffect(() => {
     return () => {
+      try { audioCtxOscRef.current?.stop() } catch { /* ignore */ }
       audioCtxRef.current?.close().catch(() => undefined)
       deepgramAsrRef.current?.stop()
       deepgramTtsPlayerRef.current?.stop()
       recognitionRef.current?.abort()
       audioRef.current?.pause()
+    }
+  }, [])
+
+  // Helper to prime the audio context synchronously (must run in a user gesture).
+  // This allows TTS to play later in async callbacks without autoplay restrictions.
+  const primeAudioContext = useCallback(() => {
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new AudioContext() } catch { return }
+    }
+    const ctx = audioCtxRef.current
+    if (ctx.state === 'closed') return
+    try {
+      const buf = ctx.createBuffer(1, 1, ctx.sampleRate)
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      src.start(0)
+    } catch { /* ignore */ }
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => undefined)
+    }
+    // Keep a zero-gain oscillator running so the context stays actively
+    // processing. iOS won't suspend an active graph when getUserMedia
+    // switches AVAudioSession to .playAndRecord.
+    if (!audioCtxOscRef.current) {
+      try {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        gain.gain.value = 0
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start()
+        audioCtxOscRef.current = osc
+      } catch { /* ignore */ }
     }
   }, [])
 
@@ -415,12 +456,31 @@ export default function App() {
   // This re-pings on every gesture so neither Safari nor Chrome idle-suspends
   // the context in the seconds between the user pressing Send and TTS firing.
   useEffect(() => {
-    const unlock = () => {
-      if (!audioCtxRef.current) {
-        try { audioCtxRef.current = new AudioContext() } catch { return }
-      }
+    primeAudioContext()
+    window.addEventListener('pointerdown', primeAudioContext, { passive: true })
+    window.addEventListener('keydown', primeAudioContext)
+    return () => {
+      window.removeEventListener('pointerdown', primeAudioContext)
+      window.removeEventListener('keydown', primeAudioContext)
+    }
+  }, [primeAudioContext])
+
+  // Keep the AudioContext warm while the mic is active OR the LLM is processing.
+  // Safari auto-suspends idle contexts — without this, auto-speak fails after
+  // voice-only interactions because there is no gesture between the mic click
+  // and TTS firing (ASR + LLM can take 10-20 s with no user interaction).
+  // If the context is already suspended (e.g. iOS reconfigured AVAudioSession when
+  // getUserMedia changed the session mode), attempt to resume it — the context was
+  // user-activated so resume() is permitted without a new gesture.
+  useEffect(() => {
+    if (!isListening && !isLoading) return
+    const id = window.setInterval(() => {
       const ctx = audioCtxRef.current
-      // Always play the silent buffer synchronously within the gesture.
+      if (!ctx || ctx.state === 'closed') return
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => undefined)
+        return
+      }
       try {
         const buf = ctx.createBuffer(1, 1, ctx.sampleRate)
         const src = ctx.createBufferSource()
@@ -428,17 +488,9 @@ export default function App() {
         src.connect(ctx.destination)
         src.start(0)
       } catch { /* ignore */ }
-      if (ctx.state === 'suspended') {
-        ctx.resume().catch(() => undefined)
-      }
-    }
-    window.addEventListener('pointerdown', unlock, { passive: true })
-    window.addEventListener('keydown', unlock)
-    return () => {
-      window.removeEventListener('pointerdown', unlock)
-      window.removeEventListener('keydown', unlock)
-    }
-  }, [])
+    }, 2500)
+    return () => window.clearInterval(id)
+  }, [isListening, isLoading])
 
   // Ensure autoSpeak is enabled whenever conversationModeEnabled is true
   useEffect(() => {
@@ -477,37 +529,38 @@ export default function App() {
   const primeBrowserSpeech = useCallback(() => {
     if (!browserSpeechSupported || speechPrimedRef.current) return
     try {
+      logVoiceDebug('prime-browser-speech:start', {
+        browserSpeechSupported,
+        alreadyPrimed: speechPrimedRef.current,
+      })
       const utterance = createSpeechUtterance(' ')
       utterance.volume = 0
+      utterance.onstart = () => {
+        speechPrimedRef.current = true
+        logVoiceDebug('prime-browser-speech:onstart')
+      }
       utterance.onend = () => {
         speechPrimedRef.current = true
+        logVoiceDebug('prime-browser-speech:onend')
       }
       utterance.onerror = () => {
-        speechPrimedRef.current = true
+        speechPrimedRef.current = false
+        logVoiceDebug('prime-browser-speech:onerror')
       }
-      window.speechSynthesis.cancel()
+      // Only cancel if something is already speaking — unconditional cancel
+      // releases Safari's AVAudioSession and can suspend the Web Audio context.
+      if (window.speechSynthesis.speaking) window.speechSynthesis.cancel()
       window.speechSynthesis.resume()
       window.speechSynthesis.speak(utterance)
-      speechPrimedRef.current = true
     } catch {
+      logVoiceDebug('prime-browser-speech:exception')
       // Best-effort browser unlock only.
     }
   }, [browserSpeechSupported])
 
-  useEffect(() => {
-    if (!browserSpeechSupported) return
-
-    const handleActivation = () => {
-      primeBrowserSpeech()
-    }
-
-    window.addEventListener('pointerdown', handleActivation, { passive: true })
-    window.addEventListener('keydown', handleActivation)
-    return () => {
-      window.removeEventListener('pointerdown', handleActivation)
-      window.removeEventListener('keydown', handleActivation)
-    }
-  }, [browserSpeechSupported, primeBrowserSpeech])
+  // (Browser speech is primed explicitly at each call site — no global
+  // gesture listener needed. A global cancel() on every pointerdown/keydown
+  // was releasing Safari's AVAudioSession and suspending the AudioContext.)
 
   const resetApiKeyGate = useCallback((message: string, options?: { preserveDraft?: boolean }) => {
     setForceApiKeyOverride(true)
@@ -532,7 +585,8 @@ export default function App() {
   }, [])
 
   const resetDeepgramKeyGate = useCallback((message: string, options?: { preserveDraft?: boolean }) => {
-    setForceDeepgramKeyOverride(true)
+    setDisableServerDeepgramForSession(true)
+    setForceDeepgramKeyOverride(false)
     setDeepgramKeyDraft(options?.preserveDraft ? deepgramKeyDraft.trim() : '')
     setDeepgramKeyGateError(message)
   }, [deepgramKeyDraft])
@@ -554,22 +608,22 @@ export default function App() {
   }, [])
 
   const stopSpeaking = useCallback(() => {
-    assistantSpeakingRef.current = false
-    deepgramTtsPlayerRef.current?.stop()
-    deepgramTtsPlayerRef.current = null
-    audioRef.current?.pause()
-    audioRef.current = null
-    if (browserSpeechSupported) {
-      window.speechSynthesis.cancel()
-    }
-    setSpeakingMessageId(null)
+    // assistantSpeakingRef.current = false
+    // deepgramTtsPlayerRef.current?.stop()
+    // deepgramTtsPlayerRef.current = null
+    // audioRef.current?.pause()
+    // audioRef.current = null
+    // if (browserSpeechSupported) {
+    //   window.speechSynthesis.cancel()
+    // }
+    // setSpeakingMessageId(null)
   }, [browserSpeechSupported])
 
   const interruptAssistantTurn = useCallback(() => {
-    streamAbortControllerRef.current?.abort()
-    streamAbortControllerRef.current = null
-    setPendingAutoSpeakMessage(null)
-    ttsBufferRef.current = ''
+    // streamAbortControllerRef.current?.abort()
+    // streamAbortControllerRef.current = null
+    // setPendingAutoSpeakMessage(null)
+    // ttsBufferRef.current = ''
     stopSpeaking()
   }, [stopSpeaking])
 
@@ -583,6 +637,10 @@ export default function App() {
     deepgramModeRef.current = 'idle'
     interruptionGuardRef.current = ''
     setIsWakeListening(false)
+    // Stopping mic tracks causes iOS to reconfigure AVAudioSession, which suspends
+    // the TTS AudioContext. The context was user-activated, so resume() works without
+    // a new gesture — kick it back to running so TTS can play immediately.
+    audioCtxRef.current?.resume().catch(() => undefined)
   }, [])
 
   const pauseListeningWhileAssistantSpeaks = useCallback(() => {
@@ -613,6 +671,16 @@ export default function App() {
         options?.onEnd?.()
         return
       }
+
+      logVoiceDebug('speak-text:start', {
+        length: trimmed.length,
+        deepgramEnabled,
+        localTtsEnabled,
+        localTtsReady,
+        browserSpeechSupported,
+        conversationModeEnabled,
+        messageId: options?.messageId ?? null,
+      })
 
       const messageId = options?.messageId ?? null
       const endStatus = options?.endStatus ?? 'Answer ready'
@@ -646,7 +714,6 @@ export default function App() {
         const player = new TTSPlayer(
           () => {
             assistantSpeakingRef.current = true
-            pauseListeningWhileAssistantSpeaks()
             setVoiceStatus('Speaking answer...')
           },
           finishPlayback,
@@ -666,6 +733,10 @@ export default function App() {
       }
 
       const speakWithBrowser = () => {
+        logVoiceDebug('speak-text:browser-fallback', {
+          primed: speechPrimedRef.current,
+          messageId,
+        })
         primeBrowserSpeech()
         const utterance = createSpeechUtterance(trimmed)
         utterance.voice = englishVoiceRef.current
@@ -675,13 +746,17 @@ export default function App() {
         if (messageId) setSpeakingMessageId(messageId)
         setVoiceStatus('Using browser voice')
         utterance.onstart = () => {
+          logVoiceDebug('speak-text:browser-onstart', { messageId })
           assistantSpeakingRef.current = true
-          pauseListeningWhileAssistantSpeaks()
           setVoiceStatus('Speaking answer...')
         }
-        utterance.onend = finishPlayback
+        utterance.onend = () => {
+          logVoiceDebug('speak-text:browser-onend', { messageId })
+          finishPlayback()
+        }
         utterance.onerror = (e: Event) => {
           const errorType = (e as SpeechSynthesisErrorEvent).error
+          logVoiceDebug('speak-text:browser-onerror', { messageId, errorType })
           if (messageId) {
             setSpeakingMessageId((current: string | null) => (current === messageId ? null : current))
           } else {
@@ -718,7 +793,6 @@ export default function App() {
         setVoiceStatus('Using local voice')
         audio.onplay = () => {
           assistantSpeakingRef.current = true
-          pauseListeningWhileAssistantSpeaks()
           setVoiceStatus('Speaking answer...')
         }
         audio.onended = () => {
@@ -755,6 +829,11 @@ export default function App() {
     async (message: MessageType) => {
       const spokenText = buildSpokenText(message)
       if (!spokenText) return
+      logVoiceDebug('speak-message', {
+        messageId: message.id,
+        textLength: message.text.length,
+        spokenLength: spokenText.length,
+      })
       await speakText(spokenText, {
         messageId: message.id,
         endStatus: 'Answer ready',
@@ -766,9 +845,20 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingAutoSpeakMessage || !voiceLoopEnabled || isLoading) return
+    logVoiceDebug('pending-auto-speak:queued', {
+      messageId: pendingAutoSpeakMessage.id,
+      voiceLoopEnabled,
+      isLoading,
+      deepgramEnabled,
+      autoSpeak,
+      conversationModeEnabled,
+    })
     let cancelled = false
     const timeoutId = window.setTimeout(() => {
       if (cancelled) return
+      logVoiceDebug('pending-auto-speak:fire', {
+        messageId: pendingAutoSpeakMessage.id,
+      })
       speakMessage(pendingAutoSpeakMessage).finally(() => {
         setPendingAutoSpeakMessage((current: MessageType | null) => (current?.id === pendingAutoSpeakMessage.id ? null : current))
       })
@@ -856,10 +946,22 @@ export default function App() {
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed) return
+      logVoiceDebug('handle-submit:start', {
+        sourceTextLength: trimmed.length,
+        voiceLoopEnabled,
+        deepgramEnabled,
+        autoSpeak,
+        conversationModeEnabled,
+      })
       if (requiresUserKey) {
         setApiKeyGateError('Enter your Anthropic API key to continue.')
         return
       }
+
+      // Prime the audio context FIRST, at the top of the gesture, before anything else
+      // that might disrupt it. This ensures TTS can play immediately without browser
+      // autoplay restrictions.
+      primeAudioContext()
 
       // Any new submit should interrupt the current assistant turn first.
       interruptAssistantTurn()
@@ -868,7 +970,10 @@ export default function App() {
       setInput('')
       setIsLoading(true)
       setVoiceError(null)
-      primeBrowserSpeech()
+      // Skip browser speech priming when Deepgram TTS is active.
+      // speechSynthesis.cancel() inside primeBrowserSpeech() releases Safari's
+      // AVAudioSession, which suspends the AudioContext and silently kills TTS.
+      if (!voiceLoopEnabled || !deepgramEnabled) primeBrowserSpeech()
       setVoiceStatus('Question sent')
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
@@ -901,13 +1006,22 @@ export default function App() {
       const historySnapshot = messages.map((m) => ({ role: m.role, content: m.text }))
 
       if (voiceLoopEnabled && deepgramEnabled) {
+        assistantSpeakingRef.current = true
+        setSpeakingMessageId(assistantId)
+        setVoiceStatus('Preparing spoken answer...')
         const player = new TTSPlayer(
           () => {
+            logVoiceDebug('handle-submit:deepgram-player-onstart', {
+              assistantId,
+            })
             assistantSpeakingRef.current = true
             setSpeakingMessageId(assistantId)
             setVoiceStatus('Speaking answer...')
           },
           () => {
+            logVoiceDebug('handle-submit:deepgram-player-onend', {
+              assistantId,
+            })
             assistantSpeakingRef.current = false
             setSpeakingMessageId((prev: string | null) => (prev === assistantId ? null : prev))
             setVoiceStatus('Answer ready')
@@ -918,6 +1032,8 @@ export default function App() {
             }
           },
           (message) => {
+            assistantSpeakingRef.current = false
+            setSpeakingMessageId((prev: string | null) => (prev === assistantId ? null : prev))
             if (shouldReopenDeepgramKeyGate(message)) {
               resetDeepgramKeyGate('This Deepgram API key cannot be used right now. Enter another Deepgram API key.')
               setVoiceStatus('Deepgram key needs attention')
@@ -994,6 +1110,13 @@ export default function App() {
               const citations: PageRef[] = dedupeCitations(event.citations ?? [])
               const repairedText = repairConcatenatedWords(streamingTextRef.current)
               const completedArtifacts = streamingArtifactsRef.current
+              logVoiceDebug('handle-submit:onDone', {
+                assistantId,
+                repairedLength: repairedText.length,
+                voiceLoopEnabled,
+                deepgramEnabled,
+                hasDeepgramPlayer: Boolean(deepgramTtsPlayerRef.current),
+              })
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== assistantId) return m
@@ -1022,6 +1145,10 @@ export default function App() {
                 }
                 ttsBufferRef.current = ''
               } else if (voiceLoopEnabled && repairedText.trim()) {
+                logVoiceDebug('handle-submit:setPendingAutoSpeakMessage', {
+                  assistantId,
+                  repairedLength: repairedText.trim().length,
+                })
                 setPendingAutoSpeakMessage({
                   id: assistantId,
                   role: 'assistant',
@@ -1087,7 +1214,7 @@ export default function App() {
         setVoiceError(err instanceof Error ? err.message : 'Connection failed')
       }
     },
-    [conversationModeEnabled, deepgramEnabled, interruptAssistantTurn, messages, pauseListeningWhileAssistantSpeaks, primeBrowserSpeech, requiresUserKey, resetApiKeyGate, resetDeepgramKeyGate, shouldReopenApiKeyGate, shouldReopenDeepgramKeyGate, voiceLoopEnabled]
+    [conversationModeEnabled, deepgramEnabled, interruptAssistantTurn, messages, pauseListeningWhileAssistantSpeaks, primeAudioContext, primeBrowserSpeech, requiresUserKey, resetApiKeyGate, resetDeepgramKeyGate, shouldReopenApiKeyGate, shouldReopenDeepgramKeyGate, voiceLoopEnabled]
   )
 
   const stopListening = useCallback(() => {
@@ -1098,6 +1225,11 @@ export default function App() {
 
   const finishVoiceCapture = useCallback(() => {
     const transcript = transcriptRef.current.trim()
+    logVoiceDebug('finish-voice-capture', {
+      transcriptLength: transcript.length,
+      conversationModeEnabled,
+      deepgramEnabled,
+    })
     pendingAutoSendRef.current = false
     setIsListening(false)
 
@@ -1155,6 +1287,8 @@ export default function App() {
     deepgramAsrRef.current = asr
     asr.start(
       (result) => {
+        // Guard: ignore callbacks from a session that was already replaced or stopped.
+        if (deepgramAsrRef.current !== asr) return
         const transcript = result.transcript.trim()
         if (!transcript) {
           if (result.speechFinal) {
@@ -1222,6 +1356,21 @@ export default function App() {
         setVoiceError(error)
         setVoiceStatus('Conversation listening unavailable')
       },
+      undefined,
+      () => {
+        // getUserMedia resolved — session is now .playAndRecord.
+        // Resume the TTS AudioContext now while the session supports playback.
+        const ctx = audioCtxRef.current
+        if (!ctx || ctx.state === 'closed') return
+        ctx.resume().catch(() => undefined)
+        try {
+          const buf = ctx.createBuffer(1, 1, ctx.sampleRate)
+          const src = ctx.createBufferSource()
+          src.buffer = buf
+          src.connect(ctx.destination)
+          src.start(0)
+        } catch { /* ignore */ }
+      },
     )
   }, [conversationModeEnabled, deepgramEnabled, finishVoiceCapture, interruptAssistantTurn, isLoading, resetDeepgramKeyGate, shouldReopenDeepgramKeyGate, speakingMessageId, stopDeepgramSession])
 
@@ -1230,7 +1379,9 @@ export default function App() {
     stopDeepgramSession()
     conversationArmedRef.current = false
     interruptAssistantTurn()
-    primeBrowserSpeech()
+    // Only prime browser speech when Deepgram TTS is not active — calling
+    // speechSynthesis.cancel() when it is active suspends the AudioContext.
+    if (!deepgramEnabled) primeBrowserSpeech()
     setVoiceError(null)
     setVoiceStatus('Listening...')
 
@@ -1258,6 +1409,19 @@ export default function App() {
           setVoiceError(error)
           setVoiceStatus('Voice error — try again')
           setIsListening(false)
+        },
+        undefined,
+        () => {
+          const ctx = audioCtxRef.current
+          if (!ctx || ctx.state === 'closed') return
+          ctx.resume().catch(() => undefined)
+          try {
+            const buf = ctx.createBuffer(1, 1, ctx.sampleRate)
+            const src = ctx.createBufferSource()
+            src.buffer = buf
+            src.connect(ctx.destination)
+            src.start(0)
+          } catch { /* ignore */ }
         },
       )
       setIsListening(true)
@@ -1318,13 +1482,25 @@ export default function App() {
 
   const beginVoiceCapture = useCallback(() => {
     if (!recognitionSupported || isLoading) return
+    logVoiceDebug('begin-voice-capture', {
+      recognitionSupported,
+      isLoading,
+      conversationModeEnabled,
+      deepgramEnabled,
+    })
     transcriptRef.current = ''
     pendingAutoSendRef.current = false
+    if (!deepgramEnabled) primeBrowserSpeech()
     startListening()
-  }, [isLoading, recognitionSupported, startListening])
+  }, [deepgramEnabled, isLoading, primeBrowserSpeech, recognitionSupported, startListening])
 
   const endVoiceCapture = useCallback(() => {
     if (!isListening) return
+    logVoiceDebug('end-voice-capture', {
+      deepgramPath: Boolean(deepgramAsrRef.current),
+      conversationModeEnabled,
+    })
+    if (!deepgramEnabled) primeBrowserSpeech()
     if (deepgramAsrRef.current) {
       stopDeepgramSession()
       setIsListening(false)
@@ -1335,7 +1511,7 @@ export default function App() {
     pendingAutoSendRef.current = true
     stopListening()
     setVoiceStatus('Processing your voice...')
-  }, [finishVoiceCapture, isListening, stopDeepgramSession, stopListening])
+  }, [deepgramEnabled, finishVoiceCapture, isListening, primeBrowserSpeech, stopDeepgramSession, stopListening])
 
   const cancelHoldToTalk = useCallback(() => {
     pendingAutoSendRef.current = false
@@ -1555,9 +1731,16 @@ export default function App() {
   }
 
   const hasMessages = messages.length > 0
+  const chromeBlurred = showApiKeyGate || showAuthGate
+  const voiceModeLabel = conversationModeEnabled ? 'Conversation on' : autoSpeak ? 'Auto speak on' : 'Text mode'
+  const modelStatusLabel = serverHasAnthropicKey ? 'Assistant ready' : 'Assistant needs key'
+  const voiceCapabilityLabel = deepgramEnabled ? 'Voice enabled' : 'Voice unavailable'
+  const showManualVoiceActions = isListening && !conversationModeEnabled
 
   return (
-    <div className="relative flex flex-col h-screen bg-slate-50 overflow-hidden">
+    <div className="relative min-h-screen overflow-hidden bg-[#0a0c10] text-slate-100">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(71,85,105,0.2),_rgba(10,12,16,0.92)_34%,_rgba(10,12,16,1)_72%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-52 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0))]" />
       {!healthCheckDone && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/30 backdrop-blur-md">
           <span className="w-8 h-8 border-4 border-white/30 border-t-white rounded-full animate-spin" />
@@ -1565,20 +1748,20 @@ export default function App() {
       )}
       {showAuthGate && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/35 backdrop-blur-md px-4">
-          <div className="w-full max-w-lg rounded-3xl border border-white/60 bg-white/95 shadow-2xl p-6">
-            <div className="w-14 h-14 bg-slate-900 rounded-2xl flex items-center justify-center mb-4 text-2xl font-semibold text-white">
+          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0f131a]/96 p-7 shadow-[0_32px_80px_rgba(0,0,0,0.4)]">
+            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] font-mono text-2xl font-semibold text-white shadow-sm">
               V
             </div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Account</p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Account</p>
+            <h2 className="mt-2 text-[28px] font-semibold leading-tight text-slate-100">
               {authMode === 'signup' ? 'Create your account' : 'Sign in to your workspace'}
             </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-500">
+            <p className="mt-3 text-sm leading-6 text-slate-400">
               Your API keys are saved per account in the database, so you only need to enter them once after signing in.
             </p>
             <div className="mt-6 grid gap-4">
               <div>
-                <label className="block text-sm font-semibold text-slate-800 mb-2">Username</label>
+                <label className="mb-2 block text-sm font-semibold text-slate-200">Username</label>
                 <input
                   type="text"
                   value={authUsername}
@@ -1595,14 +1778,14 @@ export default function App() {
                   autoComplete="username"
                   placeholder="your-name"
                   disabled={isAuthenticating}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:ring-2 focus:ring-white/10 focus:outline-none disabled:text-slate-500"
                 />
                 {authMode === 'signup' && (
                   <p className="mt-2 text-xs text-slate-500">Use 3-32 characters: letters, numbers, dots, dashes, or underscores.</p>
                 )}
               </div>
               <div>
-                <label className="block text-sm font-semibold text-slate-800 mb-2">Password</label>
+                <label className="mb-2 block text-sm font-semibold text-slate-200">Password</label>
                 <input
                   type="password"
                   value={authPassword}
@@ -1618,19 +1801,19 @@ export default function App() {
                   }}
                   autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'}
                   disabled={isAuthenticating}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:ring-2 focus:ring-white/10 focus:outline-none disabled:text-slate-500"
                 />
                 {authMode === 'signup' && (
                   <p className="mt-2 text-xs text-slate-500">Use at least 8 characters.</p>
                 )}
               </div>
             </div>
-            {authError && <p className="mt-4 text-sm text-red-600">{authError}</p>}
+            {authError && <p className="mt-4 text-sm text-red-300">{authError}</p>}
             <button
               type="button"
               onClick={handleAuthSubmit}
               disabled={isAuthenticating}
-              className="mt-5 w-full rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white px-4 py-3 text-sm font-semibold transition-colors shadow-sm"
+              className="mt-5 w-full rounded-xl border border-white/10 bg-white px-4 py-3 text-sm font-semibold text-[#0b0e13] transition-colors shadow-sm hover:bg-slate-200 disabled:bg-white/10 disabled:text-slate-500"
             >
               {isAuthenticating ? 'Please wait...' : authMode === 'signup' ? 'Create account' : 'Sign in'}
             </button>
@@ -1642,7 +1825,7 @@ export default function App() {
                   setAuthMode((current) => (current === 'signup' ? 'login' : 'signup'))
                   setAuthError(null)
                 }}
-                className="font-semibold text-slate-900 hover:text-slate-700"
+                className="font-semibold text-slate-200 hover:text-white"
               >
                 {authMode === 'signup' ? 'Sign in' : 'Create account'}
               </button>
@@ -1652,31 +1835,31 @@ export default function App() {
       )}
       {showApiKeyGate && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/30 backdrop-blur-md px-4">
-          <div className="w-full max-w-lg rounded-3xl border border-white/60 bg-white/95 shadow-2xl p-6">
-            <div className="w-14 h-14 bg-orange-100 rounded-2xl flex items-center justify-center mb-4 text-2xl font-semibold text-orange-600">
+          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0f131a]/96 p-7 shadow-[0_32px_80px_rgba(0,0,0,0.4)]">
+            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] font-mono text-2xl font-semibold text-white shadow-sm">
               V
             </div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">Before you start</p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">Connect Anthropic to continue</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-500">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Before you start</p>
+            <h2 className="mt-2 text-[28px] font-semibold leading-tight text-slate-100">Connect Anthropic to continue</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-400">
               This assistant needs an Anthropic API key to answer questions. Add your key once and the app will validate it
               before saving it in this backend's settings.
             </p>
-            <div className="mt-5 rounded-2xl border border-orange-100 bg-orange-50/70 p-4">
+            <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-700">What this does</p>
-                  <p className="mt-1 text-sm text-slate-600">Enables chat, retrieval, and generated answers in the assistant.</p>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-500">What this does</p>
+                  <p className="mt-1 text-sm text-slate-400">Enables chat, retrieval, and generated answers in the assistant.</p>
                 </div>
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-700">How it is handled</p>
-                  <p className="mt-1 text-sm text-slate-600">The key stays hidden in the UI and is saved only after validation succeeds.</p>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-500">How it is handled</p>
+                  <p className="mt-1 text-sm text-slate-400">The key stays hidden in the UI and is saved only after validation succeeds.</p>
                 </div>
               </div>
             </div>
             <div className="mt-6">
-              <label className="block text-sm font-semibold text-slate-800 mb-2">Anthropic API key</label>
-              <p className="mb-3 text-xs text-slate-500">Paste a key that starts with `sk-ant-`.</p>
+              <label className="mb-2 block text-sm font-semibold text-slate-200">Anthropic API key</label>
+              <p className="mb-3 font-mono text-xs text-slate-500">Paste a key that starts with `sk-ant-`.</p>
             </div>
             <input
               type="password"
@@ -1687,14 +1870,14 @@ export default function App() {
               autoComplete="off"
               spellCheck={false}
               disabled={isValidatingKey}
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+              className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:ring-2 focus:ring-white/10 focus:outline-none disabled:text-slate-500"
             />
-            {apiKeyGateError && <p className="mt-3 text-sm text-red-600">{apiKeyGateError}</p>}
+            {apiKeyGateError && <p className="mt-3 text-sm text-red-300">{apiKeyGateError}</p>}
             <button
               type="button"
               onClick={handleApiKeySave}
               disabled={isValidatingKey}
-              className="mt-4 w-full rounded-xl bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300 text-white px-4 py-3 text-sm font-semibold transition-colors shadow-sm flex items-center justify-center gap-2"
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white px-4 py-3 text-sm font-semibold text-[#0b0e13] transition-colors shadow-sm hover:bg-slate-200 disabled:bg-white/10 disabled:text-slate-500"
             >
               {isValidatingKey ? (
                 <>
@@ -1710,31 +1893,31 @@ export default function App() {
       )}
       {showDeepgramKeyGate && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/20 backdrop-blur-sm px-4">
-          <div className="w-full max-w-lg rounded-3xl border border-white/60 bg-white/95 shadow-2xl p-6">
-            <div className="w-14 h-14 bg-sky-100 rounded-2xl flex items-center justify-center mb-4 text-2xl font-semibold text-sky-600">
+          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0f131a]/96 p-7 shadow-[0_32px_80px_rgba(0,0,0,0.4)]">
+            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] font-mono text-2xl font-semibold text-white shadow-sm">
               D
             </div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-sky-600">Optional voice setup</p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">Add Deepgram for voice features</h2>
-            <p className="mt-3 text-sm leading-6 text-slate-500">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Optional voice setup</p>
+            <h2 className="mt-2 text-[28px] font-semibold leading-tight text-slate-100">Add Deepgram for voice features</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-400">
               Deepgram powers voice input and spoken replies. You can add the key now, or keep using text chat and come
               back to voice later from API settings.
             </p>
-            <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50/70 p-4">
+            <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Unlocks</p>
-                  <p className="mt-1 text-sm text-slate-600">Tap-to-talk, conversation mode, and spoken assistant playback.</p>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-500">Unlocks</p>
+                  <p className="mt-1 text-sm text-slate-400">Tap-to-talk, conversation mode, and spoken assistant playback.</p>
                 </div>
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Fallback</p>
-                  <p className="mt-1 text-sm text-slate-600">Skip this for now and the app will stay available in text-only mode.</p>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fallback</p>
+                  <p className="mt-1 text-sm text-slate-400">Skip this for now and the app will stay available in text-only mode.</p>
                 </div>
               </div>
             </div>
             <div className="mt-6">
-              <label className="block text-sm font-semibold text-slate-800 mb-2">Deepgram API key</label>
-              <p className="mb-3 text-xs text-slate-500">Add a valid Deepgram key to enable voice features.</p>
+              <label className="mb-2 block text-sm font-semibold text-slate-200">Deepgram API key</label>
+              <p className="mb-3 font-mono text-xs text-slate-500">Add a valid Deepgram key to enable voice features.</p>
             </div>
             <input
               type="password"
@@ -1745,9 +1928,9 @@ export default function App() {
               autoComplete="off"
               spellCheck={false}
               disabled={isValidatingDeepgramKey}
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+              className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:ring-2 focus:ring-white/10 focus:outline-none disabled:text-slate-500"
             />
-            {deepgramKeyGateError && <p className="mt-3 text-sm text-red-600">{deepgramKeyGateError}</p>}
+            {deepgramKeyGateError && <p className="mt-3 text-sm text-red-300">{deepgramKeyGateError}</p>}
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
@@ -1758,7 +1941,7 @@ export default function App() {
                   setDeepgramKeyGateError(null)
                 }}
                 disabled={isValidatingDeepgramKey}
-                className="flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:text-slate-400"
+                className="flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-white disabled:text-slate-600"
               >
                 Keep text only
               </button>
@@ -1766,7 +1949,7 @@ export default function App() {
                 type="button"
                 onClick={handleDeepgramKeySave}
                 disabled={isValidatingDeepgramKey}
-                className="flex-1 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:bg-sky-300 text-white px-4 py-3 text-sm font-semibold transition-colors shadow-sm flex items-center justify-center gap-2"
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white px-4 py-3 text-sm font-semibold text-[#0b0e13] transition-colors shadow-sm hover:bg-slate-200 disabled:bg-white/10 disabled:text-slate-500"
               >
                 {isValidatingDeepgramKey ? (
                   <>
@@ -1783,27 +1966,27 @@ export default function App() {
       )}
       {isSettingsOpen && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/30 backdrop-blur-md px-4">
-          <div className="w-full max-w-2xl rounded-3xl border border-white/60 bg-white/95 shadow-2xl p-6">
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#0f131a]/96 p-7 shadow-[0_32px_80px_rgba(0,0,0,0.4)]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold text-slate-900">API Settings</h2>
-                <p className="mt-1 text-sm text-slate-500">
+                <h2 className="text-2xl font-semibold text-slate-100">API Settings</h2>
+                <p className="mt-1 text-sm text-slate-400">
                   Keys are stored for your account in the backend database, not in browser session storage.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                className="rounded-xl border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-white"
               >
                 Close
               </button>
             </div>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">Anthropic</h3>
+                    <h3 className="text-sm font-semibold text-slate-100">Anthropic</h3>
                     {/* <p className="mt-1 text-xs text-slate-500">
                       {serverHasAnthropicKey
                         ? `Configured via ${anthropicKeySource === 'env' ? '.env' : 'backend storage'}.`
@@ -1823,15 +2006,15 @@ export default function App() {
                   autoComplete="off"
                   spellCheck={false}
                   disabled={isValidatingKey}
-                  className="mt-4 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                  className="mt-4 w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:ring-2 focus:ring-white/10 focus:outline-none disabled:text-slate-500"
                 />
-                {apiKeyGateError && <p className="mt-3 text-sm text-red-600">{apiKeyGateError}</p>}
+                {apiKeyGateError && <p className="mt-3 text-sm text-red-300">{apiKeyGateError}</p>}
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
                     onClick={handleApiKeySave}
                     disabled={isValidatingKey}
-                    className="flex-1 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-orange-600 disabled:bg-orange-300"
+                    className="flex-1 rounded-xl border border-white/10 bg-white px-4 py-3 text-sm font-semibold text-[#0b0e13] transition-colors hover:bg-slate-200 disabled:bg-white/10 disabled:text-slate-500"
                   >
                     {isValidatingKey ? 'Checking...' : serverHasAnthropicKey ? 'Replace key' : 'Save key'}
                   </button>
@@ -1840,17 +2023,17 @@ export default function App() {
                       type="button"
                       onClick={handleAnthropicDelete}
                       disabled={isDeletingAnthropicCredential}
-                      className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:text-slate-400"
+                      className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-white disabled:text-slate-600"
                     >
                       {isDeletingAnthropicCredential ? 'Removing...' : 'Remove'}
                     </button>
                   )}
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">Deepgram</h3>
+                    <h3 className="text-sm font-semibold text-slate-100">Deepgram</h3>
                     {/* <p className="mt-1 text-xs text-slate-500">
                       {serverHasDeepgramKey
                         ? `Configured via ${deepgramKeySource === 'env' ? '.env' : 'backend storage'}.`
@@ -1870,15 +2053,15 @@ export default function App() {
                   autoComplete="off"
                   spellCheck={false}
                   disabled={isValidatingDeepgramKey}
-                  className="mt-4 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-200 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                  className="mt-4 w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-white/20 focus:ring-2 focus:ring-white/10 focus:outline-none disabled:text-slate-500"
                 />
-                {deepgramKeyGateError && <p className="mt-3 text-sm text-red-600">{deepgramKeyGateError}</p>}
+                {deepgramKeyGateError && <p className="mt-3 text-sm text-red-300">{deepgramKeyGateError}</p>}
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
                     onClick={handleDeepgramKeySave}
                     disabled={isValidatingDeepgramKey}
-                    className="flex-1 rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-sky-600 disabled:bg-sky-300"
+                    className="flex-1 rounded-xl border border-white/10 bg-white px-4 py-3 text-sm font-semibold text-[#0b0e13] transition-colors hover:bg-slate-200 disabled:bg-white/10 disabled:text-slate-500"
                   >
                     {isValidatingDeepgramKey ? 'Checking...' : serverHasDeepgramKey ? 'Replace key' : 'Save key'}
                   </button>
@@ -1887,7 +2070,7 @@ export default function App() {
                       type="button"
                       onClick={handleDeepgramDelete}
                       disabled={isDeletingDeepgramCredential}
-                      className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:text-slate-400"
+                      className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-white disabled:text-slate-600"
                     >
                       {isDeletingDeepgramCredential ? 'Removing...' : 'Remove'}
                     </button>
@@ -1895,217 +2078,324 @@ export default function App() {
                 </div>
               </div>
             </div>
-            {settingsError && <p className="mt-4 text-sm text-red-600">{settingsError}</p>}
+            {settingsError && <p className="mt-4 text-sm text-red-300">{settingsError}</p>}
           </div>
         </div>
       )}
-      <header className={`flex-shrink-0 bg-slate-900 text-white px-4 py-2 flex items-center justify-between gap-4 shadow-lg z-10 transition-all ${showApiKeyGate || showAuthGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center font-bold text-sm shadow-inner">
-            V
-          </div>
-          <div>
-            <h1 className="font-bold text-base leading-none tracking-wide">Vulcan OmniPro Assistant</h1>
-            <p className="text-slate-400 text-xs mt-0.5">Voice-first help for the Vulcan OmniPro 220</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 text-xs">
-          {currentUser && (
-            <span className="hidden sm:inline text-slate-400 truncate max-w-[220px]">{currentUser.username}</span>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setSettingsError(null)
-              setIsSettingsOpen(true)
-            }}
-            className="rounded-full px-3 py-1.5 border border-slate-700 bg-slate-800 text-slate-200 transition-colors hover:bg-slate-700"
-          >
-            API settings
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!deepgramEnabled) return
-              setConversationModeEnabled((value) => {
-                const next = !value
-                localStorage.setItem('conversationMode', String(next))
-                if (next) {
-                  setAutoSpeak(true)
-                  localStorage.setItem('autoSpeak', 'true')
-                  startConversationListening(true)
-                }
-                if (!next) {
-                  conversationArmedRef.current = false
-                  stopListening()
-                  setVoiceStatus(idleVoiceStatus(false, deepgramEnabled))
-                }
-                return next
-              })
-            }}
-            disabled={!deepgramEnabled || requiresUserKey}
-            className={`rounded-full px-3 py-1.5 border transition-colors ${
-              conversationModeEnabled && deepgramEnabled ? 'bg-white text-slate-900 border-white' : 'bg-slate-800 border-slate-700 text-slate-300'
-            } disabled:opacity-50`}
-          >
-            Conversation {conversationModeEnabled ? 'on' : 'off'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!speechSupported) return
-              if (autoSpeak) stopSpeaking()
-              setAutoSpeak((value) => {
-                const next = !value
-                localStorage.setItem('autoSpeak', String(next))
-                return next
-              })
-            }}
-            disabled={!speechSupported}
-            className={`rounded-full px-3 py-1.5 border transition-colors ${
-              (autoSpeak || conversationModeEnabled) && speechSupported ? 'bg-white text-slate-900 border-white' : 'bg-slate-800 border-slate-700 text-slate-300'
-            } disabled:opacity-50`}
-          >
-            Auto speak {autoSpeak || conversationModeEnabled ? 'on' : 'off'}
-          </button>
-          {currentUser && (
-            <button
-              type="button"
-              onClick={handleLogout}
-              disabled={isLoggingOut}
-              className="rounded-full px-3 py-1.5 border border-slate-700 bg-slate-800 text-slate-200 transition-colors hover:bg-slate-700 disabled:opacity-50"
-            >
-              {isLoggingOut ? 'Signing out...' : 'Sign out'}
-            </button>
-          )}
-        </div>
-      </header>
-
-      <div className={`flex flex-1 overflow-hidden transition-all ${showApiKeyGate || showAuthGate ? 'blur-sm pointer-events-none select-none' : ''}`}>
-        <div className="flex flex-col w-full min-w-0">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 chat-scroll">
-            {!hasMessages && (
-              <div className="flex flex-col items-center justify-center h-full text-center px-4 py-6">
-                <div className="w-12 h-12 bg-orange-100 rounded-2xl flex items-center justify-center mb-3 text-lg font-semibold text-orange-600">
-                  P
-                </div>
-                <h2 className="text-base font-semibold text-slate-700 mb-1">Vulcan OmniPro Assistant</h2>
-                <p className="text-xs text-slate-400 max-w-sm mb-5">
-                  Ask anything about setup, troubleshooting, or settings. Tap the mic, or turn on conversation mode and just talk.
-                </p>
-                <div className="grid grid-cols-1 gap-2 w-full max-w-md">
-                  {SUGGESTED_QUESTIONS.map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => handleSubmit(q)}
-                      className="text-left text-sm text-slate-600 bg-white border border-slate-200 hover:border-orange-300 hover:bg-orange-50 rounded-xl px-4 py-2.5 transition-colors shadow-sm"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-3 py-3 sm:px-5 sm:py-5">
+        <header className={`rounded-[22px] border border-white/10 bg-[#0d1016]/96 px-5 py-4 text-white shadow-[0_24px_80px_rgba(0,0,0,0.45)] backdrop-blur transition-all ${chromeBlurred ? 'blur-sm pointer-events-none select-none' : ''}`}>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] font-mono text-sm font-bold text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+                V
               </div>
-            )}
-
-            {messages.map((msg) => (
-              <Message
-                key={msg.id}
-                message={msg}
-                canSpeak={speechSupported}
-                isSpeaking={speakingMessageId === msg.id}
-                onSpeak={speakMessage}
-                onStopSpeaking={stopSpeaking}
-              />
-            ))}
-          </div>
-
-          <div className="flex-shrink-0 border-t border-slate-200 bg-white px-4 py-3">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                handleSubmit(input)
-              }}
-              className="space-y-2"
-            >
-              <div className="flex items-end gap-2">
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={handleTextareaChange}
-                  onKeyDown={handleKeyDown}
-                  // placeholder={isListening || isWakeListening ? 'Listening...' : 'Ask about the Vulcan OmniPro 220...'}
-                  rows={1}
-                  disabled={requiresUserKey}
-                  className="flex-1 resize-none rounded-xl border border-slate-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 focus:outline-none px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 disabled:bg-slate-50 disabled:text-slate-400 transition-colors"
-                  style={{ minHeight: '44px', maxHeight: '160px' }}
-                />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-lg font-semibold leading-none text-white">Vulcan OmniPro Assistant</h1>
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-[11px] font-medium text-slate-400">
+                    Support console
+                  </span>
+                </div>
+                <p className="mt-1.5 text-sm text-slate-500">Voice-first help for setup, troubleshooting, and machine settings.</p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-3 lg:items-end">
+              <div className="flex flex-wrap gap-2 font-mono text-[11px]">
+                <span className="rounded-full border border-emerald-400/15 bg-emerald-400/8 px-2.5 py-1 font-medium text-emerald-300">
+                  {modelStatusLabel}
+                </span>
+                <span className="rounded-full border border-sky-400/15 bg-sky-400/8 px-2.5 py-1 font-medium text-sky-300">
+                  {voiceCapabilityLabel}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-medium text-slate-400">
+                  {voiceModeLabel}
+                </span>
+                {currentUser && (
+                  <span className="max-w-[240px] truncate rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-medium text-slate-400">
+                    {currentUser.username}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
                 <button
                   type="button"
                   onClick={() => {
-                    if (isListening) endVoiceCapture()
-                    else beginVoiceCapture()
+                    setSettingsError(null)
+                    setIsSettingsOpen(true)
                   }}
-                  onContextMenu={(e) => e.preventDefault()}
-                  disabled={!recognitionSupported || isLoading || requiresUserKey}
-                  className={`flex-shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors shadow-sm border ${
-                    isListening
-                      ? 'bg-red-50 text-red-700 border-red-200'
-                      : voiceMissed
-                      ? 'bg-amber-50 text-amber-700 border-amber-300'
-                      : 'bg-white text-slate-700 border-slate-300 hover:border-orange-300 hover:text-orange-600'
-                  } disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200`}
-                  style={{ height: '44px' }}
+                  className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-2 font-medium text-slate-300 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                 >
-                  {isListening ? 'Tap to send' : voiceMissed ? 'Try again' : 'Tap to talk'}
+                  API settings
                 </button>
-                <button
-                  type="submit"
-                  disabled={!input.trim() || requiresUserKey}
-                  className="flex-shrink-0 bg-orange-500 hover:bg-orange-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl px-5 py-2.5 text-sm font-semibold transition-colors shadow-sm"
-                  style={{ height: '44px' }}
-                >
-                  {isLoading ? (
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Wait</span>
-                    </span>
-                  ) : (
-                    'Send'
-                  )}
-                </button>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 pl-1">
-                <span>Enter to send · Shift+Enter for new line</span>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span>{recognitionSupported ? voiceStatus : 'Voice input not supported in this browser'}</span>
-                  {/* <span>{speechSupported ? voiceEngineLabel : 'Speech playback not supported'}</span> */}
-                </div>
-              </div>
-              {recognitionSupported && (
-                <div className="flex flex-wrap gap-2 pl-1">
-                  {VOICE_COMMAND_HINTS.map((hint) => (
-                    <button
-                      key={hint}
-                      type="button"
-                      onClick={() => setInput(hint.replace('Say: "', '').replace('"', ''))}
-                      className="text-[11px] text-slate-500 bg-slate-100 hover:bg-orange-50 hover:text-orange-600 rounded-full px-2.5 py-1 transition-colors"
-                    >
-                      {hint}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {(isListening || isWakeListening) && (
                 <button
                   type="button"
-                  onClick={cancelHoldToTalk}
-                  className="text-xs text-slate-500 hover:text-red-600 transition-colors pl-1"
+                  onClick={() => {
+                    if (!deepgramEnabled) return
+                    setConversationModeEnabled((value) => {
+                      const next = !value
+                      localStorage.setItem('conversationMode', String(next))
+                      if (next) {
+                        setAutoSpeak(true)
+                        localStorage.setItem('autoSpeak', 'true')
+                        // Play a silent 200ms tone synchronously within this click gesture.
+                        // This fully unlocks the AudioContext so TTS works on subsequent
+                        // voice auto-submits without needing another user gesture.
+                        const ctx = audioCtxRef.current
+                        if (ctx && ctx.state !== 'closed') {
+                          try {
+                            const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * 0.2), ctx.sampleRate)
+                            const src = ctx.createBufferSource()
+                            src.buffer = buf
+                            src.connect(ctx.destination)
+                            src.start(0)
+                          } catch { /* ignore */ }
+                          ctx.resume().catch(() => undefined)
+                        }
+                        startConversationListening(true)
+                      }
+                      if (!next) {
+                        conversationArmedRef.current = false
+                        stopListening()
+                        setVoiceStatus(idleVoiceStatus(false, deepgramEnabled))
+                      }
+                      return next
+                    })
+                  }}
+                  disabled={!deepgramEnabled || requiresUserKey}
+                  className={`rounded-full border px-3.5 py-2 font-medium transition-colors ${
+                    conversationModeEnabled && deepgramEnabled
+                      ? 'border-white/20 bg-white text-[#0b0e13]'
+                      : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:bg-white/[0.06] hover:text-white'
+                  } disabled:opacity-50`}
                 >
-                  Cancel voice capture
+                  Conversation {conversationModeEnabled ? 'on' : 'off'}
                 </button>
-              )}
-              {voiceError && <p className="text-xs text-red-500 pl-1">{voiceError}</p>}
-            </form>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!speechSupported) return
+                    if (autoSpeak) stopSpeaking()
+                    setAutoSpeak((value) => {
+                      const next = !value
+                      localStorage.setItem('autoSpeak', String(next))
+                      return next
+                    })
+                  }}
+                  disabled={!speechSupported}
+                  className={`rounded-full border px-3.5 py-2 font-medium transition-colors ${
+                    (autoSpeak || conversationModeEnabled) && speechSupported
+                      ? 'border-white/20 bg-white text-[#0b0e13]'
+                      : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:bg-white/[0.06] hover:text-white'
+                  } disabled:opacity-50`}
+                >
+                  Auto speak {autoSpeak || conversationModeEnabled ? 'on' : 'off'}
+                </button>
+                {currentUser && (
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    disabled={isLoggingOut}
+                    className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-2 font-medium text-slate-300 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-white disabled:opacity-50"
+                  >
+                    {isLoggingOut ? 'Signing out...' : 'Sign out'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div className={`mt-3 flex min-h-0 flex-1 overflow-hidden transition-all ${chromeBlurred ? 'blur-sm pointer-events-none select-none' : ''}`}>
+          <div className="flex min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0d1117]/88 shadow-[0_24px_90px_rgba(0,0,0,0.38)] backdrop-blur">
+            <div className="border-b border-white/10 px-5 py-3 sm:px-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Workspace</p>
+                  <h2 className="mt-1 text-base font-semibold text-slate-100">Assistant conversation</h2>
+                </div>
+                <div className="flex flex-wrap gap-2 font-mono text-[11px]">
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-slate-400">
+                    {recognitionSupported ? voiceStatus : 'Voice input not supported'}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-slate-400">
+                    {isLoading ? 'Generating answer' : 'Ready'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div ref={scrollRef} className="chat-scroll flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
+              <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
+                {!hasMessages && (
+                  <div className="grid min-h-full place-items-center px-2 py-8">
+                    <div className="w-full max-w-3xl rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(19,23,31,0.98),rgba(11,14,19,0.98))] p-6 shadow-[0_22px_60px_rgba(0,0,0,0.3)] sm:p-8">
+                      <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="max-w-xl">
+                          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] font-mono text-lg font-semibold text-slate-100 shadow-sm">
+                            V
+                          </div>
+                          <p className="mt-5 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Get started</p>
+                          <h2 className="mt-2 text-2xl font-semibold leading-tight text-slate-100">Ask for setup help, troubleshooting, or machine settings.</h2>
+                          <p className="mt-3 max-w-lg text-sm leading-6 text-slate-400">
+                            The assistant is tuned for the Vulcan OmniPro 220. Use typed chat, tap the mic for one-shot voice input, or leave conversation mode on for hands-free back-and-forth.
+                          </p>
+                        </div>
+                        <div className="grid min-w-[220px] gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                          <div>
+                            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Current setup</p>
+                            <div className="mt-3 space-y-2 text-sm text-slate-400">
+                              <div className="flex items-center justify-between gap-3">
+                                <span>Assistant</span>
+                                <span className="font-mono font-medium text-slate-100">{serverHasAnthropicKey ? 'Connected' : 'Needs key'}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-3">
+                                <span>Voice</span>
+                                <span className="font-mono font-medium text-slate-100">{deepgramEnabled ? 'Enabled' : 'Text only'}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-3">
+                                <span>Mode</span>
+                                <span className="font-mono font-medium text-slate-100">{conversationModeEnabled ? 'Conversation' : 'Manual'}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-7 grid grid-cols-1 gap-3 md:grid-cols-2">
+                        {SUGGESTED_QUESTIONS.map((q) => (
+                          <button
+                            key={q}
+                            onClick={() => handleSubmit(q)}
+                            className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-left text-sm leading-6 text-slate-300 shadow-[0_8px_30px_rgba(0,0,0,0.16)] transition-all duration-150 hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.05] hover:text-white"
+                          >
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {messages.map((msg) => (
+                  <Message
+                    key={msg.id}
+                    message={msg}
+                    canSpeak={speechSupported}
+                    isSpeaking={speakingMessageId === msg.id}
+                    onSpeak={speakMessage}
+                    onStopSpeaking={stopSpeaking}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-white/10 bg-[#0d1117]/92 px-4 py-4 backdrop-blur sm:px-6">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  handleSubmit(input)
+                }}
+                className="mx-auto max-w-5xl space-y-3"
+              >
+                <div className="flex items-end gap-2 rounded-[20px] border border-white/10 bg-white/[0.03] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                  <textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={handleTextareaChange}
+                    onKeyDown={handleKeyDown}
+                    placeholder={isListening || isWakeListening ? 'Listening...' : 'Ask about the Vulcan OmniPro 220...'}
+                    rows={1}
+                    disabled={requiresUserKey}
+                    className="flex-1 resize-none rounded-[16px] border-0 bg-transparent px-4 py-3 text-sm leading-6 text-slate-100 placeholder:text-slate-500 focus:outline-none disabled:text-slate-500"
+                    style={{ minHeight: '48px', maxHeight: '160px' }}
+                  />
+                  {showManualVoiceActions ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={cancelHoldToTalk}
+                        className="flex h-12 flex-shrink-0 items-center rounded-[16px] border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-slate-300 shadow-sm transition-all hover:border-red-400/20 hover:bg-red-500/10 hover:text-red-300"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={endVoiceCapture}
+                        className="flex h-12 flex-shrink-0 items-center rounded-[16px] border border-white/10 bg-white px-5 text-sm font-semibold text-[#0b0e13] shadow-sm transition-all hover:bg-slate-200"
+                      >
+                        Send
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {!(conversationModeEnabled && isListening) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isListening) endVoiceCapture()
+                            else beginVoiceCapture()
+                          }}
+                          onContextMenu={(e) => e.preventDefault()}
+                          disabled={!recognitionSupported || isLoading || requiresUserKey}
+                          className={`flex h-12 flex-shrink-0 items-center rounded-[18px] border px-4 text-sm font-semibold transition-colors shadow-sm ${
+                            isListening
+                              ? 'border-red-400/20 bg-red-500/10 text-red-300'
+                              : voiceMissed
+                              ? 'border-amber-400/20 bg-amber-500/10 text-amber-300'
+                              : 'border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/20 hover:bg-white/[0.07] hover:text-white'
+                          } disabled:border-white/10 disabled:bg-white/[0.02] disabled:text-slate-600`}
+                        >
+                          {isListening ? 'Tap to send' : voiceMissed ? 'Try again' : 'Tap to talk'}
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={!input.trim() || requiresUserKey}
+                        className="flex h-12 flex-shrink-0 items-center rounded-[16px] border border-white/10 bg-white px-5 text-sm font-semibold text-[#0b0e13] shadow-sm transition-all hover:bg-slate-200 disabled:border-white/5 disabled:bg-white/10 disabled:text-slate-600"
+                      >
+                        {isLoading ? (
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Wait</span>
+                          </span>
+                        ) : (
+                          'Send'
+                        )}
+                      </button>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 pl-1 font-mono text-[11px] text-slate-500">
+                  <span>Enter to send. Shift+Enter for a new line.</span>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span>{recognitionSupported ? voiceStatus : 'Voice input not supported in this browser'}</span>
+                  </div>
+                </div>
+                {recognitionSupported && (
+                  <div className="flex flex-wrap gap-2 pl-1">
+                    {VOICE_COMMAND_HINTS.map((hint) => (
+                      <button
+                        key={hint}
+                        type="button"
+                        onClick={() => setInput(hint.replace('Say: "', '').replace('"', ''))}
+                        className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 font-mono text-[11px] text-slate-400 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
+                      >
+                        {hint}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!showManualVoiceActions && (isListening || isWakeListening) && (
+                  <button
+                    type="button"
+                    onClick={cancelHoldToTalk}
+                    className="pl-1 font-mono text-[11px] text-slate-500 transition-colors hover:text-red-300"
+                  >
+                    Cancel voice capture
+                  </button>
+                )}
+                {voiceError && <p className="pl-1 text-xs text-red-300">{voiceError}</p>}
+              </form>
+            </div>
           </div>
         </div>
       </div>
