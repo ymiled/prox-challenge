@@ -16,9 +16,9 @@ primary_region = 'iad'
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = 'off'
+  auto_stop_machines = 'suspend'
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
   processes = ['app']
 
   [[http_service.checks]]
@@ -30,5 +30,5 @@ primary_region = 'iad'
     timeout = '5s'
 
 [[vm]]
-  size = 'shared-cpu-2x'
-  memory = '2gb'
+  size = 'shared-cpu-1x'
+  memory = '512mb'
